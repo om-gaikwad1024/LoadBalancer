@@ -61,6 +61,10 @@ constexpr std::uint64_t kMaxTimeoutMs = 600'000;
 constexpr std::uint64_t kMaxPoolConnections = 65535;
 constexpr std::uint64_t kMaxPoolWaiters = 1'000'000;
 constexpr std::uint64_t kMaxIdleTimeoutMs = 3'600'000;
+constexpr std::uint64_t kMinHealthIntervalMs = 10;
+constexpr std::uint64_t kMaxHealthIntervalMs = 3'600'000;
+constexpr std::uint64_t kMaxHealthThreshold = 100;
+constexpr std::size_t kMaxHealthPathLength = 1024;
 constexpr std::uint64_t kMinMaintenanceMs = 10;
 constexpr std::uint64_t kMaxMaintenanceMs = 60'000;
 constexpr std::string_view kAutoThreads = "auto";
@@ -393,6 +397,41 @@ void build_limits(const json& root, Validator& v, ConfigSnapshot& out) {
     set("max_client_connections", 1, kMaxClientConnections, l.max_client_connections);
 }
 
+void build_health(const json& gj, const std::string& gpath, Validator& v, HealthConfig& out) {
+    const std::string path = child(gpath, "health");
+    const json* j = Validator::field(gj, "health");
+    if (j == nullptr || !v.check_object(*j, path,
+                                        {"type", "path", "interval_ms", "timeout_ms", "unhealthy_threshold",
+                                         "healthy_threshold"})) {
+        return;
+    }
+    if (auto type = v.get_string(*j, path, "type")) {
+        if (*type == "http") out.type = HealthConfig::Type::Http;
+        else if (*type == "tcp") out.type = HealthConfig::Type::Tcp;
+        else v.error(child(path, "type"), "must be \"http\" or \"tcp\"");
+    }
+    if (auto p = v.get_string(*j, path, "path")) {
+        const bool visible = std::all_of(p->begin(), p->end(), [](char c) {
+            return static_cast<unsigned char>(c) > 0x20 && static_cast<unsigned char>(c) < 0x7F;
+        });
+        if (p->empty() || p->front() != '/' || p->size() > kMaxHealthPathLength || !visible) {
+            v.error(child(path, "path"), "must start with '/' and contain only visible ASCII (max 1024)");
+        } else {
+            out.path = *p;
+        }
+    }
+    const auto set = [&](std::string_view key, std::uint64_t min, std::uint64_t max, std::uint32_t& field) {
+        if (auto value = v.get_uint(*j, path, key, min, max)) field = static_cast<std::uint32_t>(*value);
+    };
+    set("interval_ms", kMinHealthIntervalMs, kMaxHealthIntervalMs, out.interval_ms);
+    set("timeout_ms", 1, kMaxTimeoutMs, out.timeout_ms);
+    set("unhealthy_threshold", 1, kMaxHealthThreshold, out.unhealthy_threshold);
+    set("healthy_threshold", 1, kMaxHealthThreshold, out.healthy_threshold);
+    if (out.interval_ms != 0 && out.timeout_ms > out.interval_ms) {
+        v.error(child(path, "timeout_ms"), "must not exceed interval_ms (one probe per backend at a time)");
+    }
+}
+
 // Returns true when the groups section is fully valid (routing checks depend on it).
 bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
     const std::string path = "/groups";
@@ -414,7 +453,7 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
     for (std::size_t gi = 0; gi < j->size(); ++gi) {
         const json& gj = (*j)[gi];
         const std::string gpath = child(path, gi);
-        if (!v.check_object(gj, gpath, {"name", "strategy", "host_header", "backends"})) continue;
+        if (!v.check_object(gj, gpath, {"name", "strategy", "host_header", "health", "backends"})) continue;
 
         GroupConfig group;
         if (auto name = v.get_name(gj, gpath, "name")) {
@@ -432,6 +471,7 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
             else if (*mode == "backend") group.host_header = HostHeaderMode::Backend;
             else v.error(child(gpath, "host_header"), "must be \"preserve\" or \"backend\"");
         }
+        build_health(gj, gpath, v, group.health);
 
         const json* bj = Validator::field(gj, "backends");
         const std::string bpath = child(gpath, "backends");

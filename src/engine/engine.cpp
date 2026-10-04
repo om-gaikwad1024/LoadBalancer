@@ -12,6 +12,7 @@
 #include "backend/registry.h"
 #include "config/config_store.h"
 #include "core/timer_service.h"
+#include "health/health_checker.h"
 #include "net/iocp.h"
 #include "net/listener.h"
 #include "net/winsock.h"
@@ -100,6 +101,15 @@ public:
         maintenance_.start(std::chrono::milliseconds(config->maintenance.interval_ms), backends_);
         started_ = true;
 
+        // Transitions are counted here; the event log (step 1.9) records them with their reason.
+        const auto on_transition = [this](const health::HealthTransition& t) {
+            (t.up ? counters_.backends_marked_up : counters_.backends_marked_down).fetch_add(1);
+        };
+        if (!health_.start(*config, backends_.all(), on_transition, error)) {
+            stop();
+            return false;
+        }
+
         listener_ = std::make_unique<net::Listener>(port_, ext_, *this);
         if (!listener_->start(config->listen, error)) {
             stop();
@@ -112,6 +122,7 @@ public:
         if (!started_ || stopped_) return;
         stopped_ = true;
         stopping_.store(true);
+        health_.stop();
 
         // 1. Stop accepting. Pending AcceptEx calls complete and their sockets are closed.
         if (listener_) listener_->stop();
@@ -173,6 +184,8 @@ public:
         s.stale_retries = counters_.stale_retries.load();
         s.pool_rejections = counters_.pool_rejections.load();
         s.no_backend_available = counters_.no_backend_available.load();
+        s.backends_marked_down = counters_.backends_marked_down.load();
+        s.backends_marked_up = counters_.backends_marked_up.load();
         s.client_timeouts = counters_.client_timeouts.load();
         s.backend_timeouts = counters_.backend_timeouts.load();
         return s;
@@ -198,6 +211,7 @@ private:
     backend::BackendRegistry backends_;
     TimerService timers_;
     MaintenanceThread maintenance_;
+    health::HealthChecker health_;
     net::WorkerPool workers_;
     std::unique_ptr<net::Listener> listener_;
     proxy::SessionRegistry registry_;

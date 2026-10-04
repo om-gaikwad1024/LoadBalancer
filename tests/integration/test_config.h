@@ -55,7 +55,19 @@ inline std::shared_ptr<const lb::ConfigSnapshot> make_proxy_config(
           {"shutdown_grace_ms", 5000}}},
         {"trusted_proxies", nlohmann::json::array()},
         {"groups",
-         {{{"name", "web"}, {"strategy", "round_robin"}, {"host_header", "preserve"}, {"backends", backends}}}},
+         {{{"name", "web"},
+           {"strategy", "round_robin"},
+           {"host_header", "preserve"},
+           // First probes are staggered over the first interval, so with 60 s no probe
+           // touches tests that are not about health checks; those set short intervals.
+           {"health",
+            {{"type", "http"},
+             {"path", "/health"},
+             {"interval_ms", 60000},
+             {"timeout_ms", 1000},
+             {"unhealthy_threshold", 3},
+             {"healthy_threshold", 2}}},
+           {"backends", backends}}}},
         {"routing", {{"default_group", "web"}}},
     };
     if (tweak) tweak(j);

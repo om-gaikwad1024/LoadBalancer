@@ -49,6 +49,28 @@ BackendRuntime::BackendRuntime(const BackendConfig& config, std::string group_na
       weight(config.weight),
       pool(limits, ops) {}
 
+bool BackendRuntime::mark_unhealthy() noexcept {
+    BackendState expected = BackendState::Healthy;
+    if (!state.compare_exchange_strong(expected, BackendState::Unhealthy, std::memory_order_acq_rel)) return false;
+    pool.close_idle();
+    return true;
+}
+
+bool BackendRuntime::mark_healthy() noexcept {
+    BackendState expected = BackendState::Unhealthy;
+    return state.compare_exchange_strong(expected, BackendState::Healthy, std::memory_order_acq_rel);
+}
+
+void BackendRuntime::set_last_probe_error(std::string error) {
+    std::lock_guard lock(probe_error_mutex_);
+    last_probe_error_ = std::move(error);
+}
+
+std::string BackendRuntime::last_probe_error() const {
+    std::lock_guard lock(probe_error_mutex_);
+    return last_probe_error_;
+}
+
 BackendStats BackendRuntime::stats() const {
     BackendStats s;
     s.id = id;
@@ -67,6 +89,10 @@ BackendStats BackendRuntime::stats() const {
     s.connections_opened = p.opened;
     s.connections_reused = p.reused;
     s.stale_discarded = p.stale_discarded;
+    s.health_probes = probes.load();
+    s.probe_failures_in_a_row = probe_failures_in_a_row.load();
+    s.probe_successes_in_a_row = probe_successes_in_a_row.load();
+    s.last_probe_error = last_probe_error();
     return s;
 }
 

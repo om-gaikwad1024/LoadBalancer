@@ -31,6 +31,11 @@ struct BackendStats {
     std::uint64_t connections_opened = 0;
     std::uint64_t connections_reused = 0;
     std::uint64_t stale_discarded = 0;
+    // Active health checks (plan IV.10).
+    std::uint64_t health_probes = 0;
+    std::uint32_t probe_failures_in_a_row = 0;
+    std::uint32_t probe_successes_in_a_row = 0;
+    std::string last_probe_error;  // empty after a successful probe
 };
 
 }  // namespace lb

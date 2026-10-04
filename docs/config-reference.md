@@ -115,6 +115,23 @@ Forwarding headers the backend receives:
 | `groups[].host_header` | string | `"preserve"` or `"backend"` | `preserve` forwards the client's `Host` (plan IV.6 default); `backend` rewrites it to the chosen backend's `address:port`. `X-Forwarded-Host` carries the original either way |
 | `groups[].backends` | array | at least one entry | Backends in this group |
 
+`groups[].health`: active health checks (plan IV.10), run on a dedicated thread with
+non-blocking probes, so a slow probe never delays other probes or live traffic:
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `health.type` | string | `"http"` or `"tcp"` | `http`: `GET <path>`; a status of 200–399 is healthy. `tcp`: a completed connect is healthy |
+| `health.path` | string | starts with `/`, visible ASCII, ≤ 1024 chars | Path for HTTP probes. Required for `tcp` too, though unused |
+| `health.interval_ms` | integer | 10–3600000 | Time between probe starts for each backend. Each backend's first probe is spread over the first interval |
+| `health.timeout_ms` | integer | 1–600000, ≤ `interval_ms` | One probe's limit, covering connect, request and status line. Longer counts as a failure |
+| `health.unhealthy_threshold` | integer | 1–100 | **N**: consecutive failed probes before the backend is marked unhealthy. Its idle pooled connections are then closed and it gets no new requests |
+| `health.healthy_threshold` | integer | 1–100 | **M**: consecutive successful probes before an unhealthy backend is marked healthy again |
+
+A killed backend is excluded within `interval_ms × N + timeout_ms` (plan IV.10). Health
+checks only move a backend between healthy and unhealthy; they never change a draining
+backend. Every backend starts healthy. Probe sockets skip Windows' connect retries after a
+refusal, so a dead backend fails a probe at once instead of after about a second.
+
 Each backend:
 
 | Field | Type | Valid range | Meaning |

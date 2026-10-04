@@ -30,10 +30,16 @@ json good_config() {
                     "backend_idle_ms": 60000, "shutdown_grace_ms": 5000 },
       "trusted_proxies": [ "10.0.0.0/8", "192.168.1.7" ],
       "groups": [
-        { "name": "web", "strategy": "round_robin", "host_header": "preserve", "backends": [
+        { "name": "web", "strategy": "round_robin", "host_header": "preserve",
+          "health": { "type": "http", "path": "/healthz", "interval_ms": 2000, "timeout_ms": 500,
+                      "unhealthy_threshold": 3, "healthy_threshold": 2 },
+          "backends": [
             { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 3 },
             { "id": "web-2", "address": "127.0.0.2", "port": 9002, "weight": 1 } ] },
-        { "name": "api", "strategy": "least_connections", "host_header": "backend", "backends": [
+        { "name": "api", "strategy": "least_connections", "host_header": "backend",
+          "health": { "type": "tcp", "path": "/", "interval_ms": 1000, "timeout_ms": 1000,
+                      "unhealthy_threshold": 1, "healthy_threshold": 5 },
+          "backends": [
             { "id": "api-1", "address": "10.0.0.5", "port": 7000, "weight": 1 } ] }
       ],
       "routing": { "default_group": "web" }
@@ -122,6 +128,14 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.timeouts.backend_connect_ms, 3000u);
     EXPECT_EQ(c.timeouts.backend_response_ms, 50000u);
     EXPECT_EQ(c.timeouts.backend_idle_ms, 60000u);
+    EXPECT_EQ(c.groups[0].health.type, lb::HealthConfig::Type::Http);
+    EXPECT_EQ(c.groups[0].health.path, "/healthz");
+    EXPECT_EQ(c.groups[0].health.interval_ms, 2000u);
+    EXPECT_EQ(c.groups[0].health.timeout_ms, 500u);
+    EXPECT_EQ(c.groups[0].health.unhealthy_threshold, 3u);
+    EXPECT_EQ(c.groups[0].health.healthy_threshold, 2u);
+    EXPECT_EQ(c.groups[1].health.type, lb::HealthConfig::Type::Tcp);
+    EXPECT_EQ(c.groups[1].health.healthy_threshold, 5u);
     EXPECT_EQ(c.groups[0].strategy, lb::Strategy::RoundRobin);
     EXPECT_EQ(c.groups[1].strategy, lb::Strategy::LeastConnections);
     EXPECT_EQ(c.groups[0].host_header, lb::HostHeaderMode::Preserve);
@@ -271,6 +285,13 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/maintenance/interval_ms", 9, "between 10 and 60000"},
     BadValueCase{"/timeouts/client_header_ms", 0, "between 1 and 600000"},
     BadValueCase{"/timeouts/backend_response_ms", 600001, "between 1 and 600000"},
+    BadValueCase{"/groups/0/health/type", "icmp", "must be \"http\" or \"tcp\""},
+    BadValueCase{"/groups/0/health/path", "health", "must start with '/'"},
+    BadValueCase{"/groups/0/health/path", "/a b", "must start with '/'"},
+    BadValueCase{"/groups/0/health/interval_ms", 9, "between 10 and 3600000"},
+    BadValueCase{"/groups/0/health/timeout_ms", 2001, "must not exceed interval_ms"},
+    BadValueCase{"/groups/0/health/unhealthy_threshold", 0, "between 1 and 100"},
+    BadValueCase{"/groups/0/health/healthy_threshold", 101, "between 1 and 100"},
     BadValueCase{"/groups/0/strategy", "random", "must be \"round_robin\" or \"least_connections\""},
     BadValueCase{"/groups/0/strategy", 2, "expected a string"},
     BadValueCase{"/groups/0/host_header", "rewrite", "must be \"preserve\" or \"backend\""},

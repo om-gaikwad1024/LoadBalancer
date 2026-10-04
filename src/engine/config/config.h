@@ -67,6 +67,17 @@ enum class Strategy : std::uint8_t {
     LeastConnections,  // fewest in-flight requests (plan IV.5 decision)
 };
 
+// Active health checks for one group's backends (plan IV.10).
+struct HealthConfig {
+    enum class Type : std::uint8_t { Http, Tcp };
+    Type type = Type::Http;
+    std::string path;  // HTTP probes: GET path; status 200-399 = healthy
+    std::uint32_t interval_ms = 0;          // time between probe starts, per backend
+    std::uint32_t timeout_ms = 0;           // per probe, <= interval_ms
+    std::uint32_t unhealthy_threshold = 0;  // N consecutive failures: marked down
+    std::uint32_t healthy_threshold = 0;    // M consecutive successes: marked up again
+};
+
 enum class HostHeaderMode : std::uint8_t {
     Preserve,  // forward the client's Host (default in plan IV.6)
     Backend,   // rewrite Host to the backend's address:port
@@ -102,6 +113,7 @@ struct GroupConfig {
     std::vector<BackendConfig> backends;
     Strategy strategy = Strategy::RoundRobin;
     HostHeaderMode host_header = HostHeaderMode::Preserve;
+    HealthConfig health;
 };
 
 struct RoutingConfig {

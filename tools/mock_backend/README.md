@@ -29,6 +29,7 @@ Set them at startup (`--latency-ms 50`) or while the mock runs (`GET /__mock/set
 | `echo_headers` | 0 | Response body = the request line and headers as received |
 | `echo_body` | 0 | Response body = the received request body, de-chunked (after the head if `echo_headers` is also on) |
 | `health_status` | 200 | Status of the health path |
+| `health_latency_ms` | 0 | Sleep before answering the health path (a slow health endpoint) |
 | `body_bytes` | 2 | Size of a normal 200 body (`ok`, padded with `.`) |
 
 ## Control endpoints

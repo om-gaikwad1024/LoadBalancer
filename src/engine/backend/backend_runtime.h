@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 #include "backend/backend_types.h"
@@ -38,7 +39,24 @@ public:
     // Healthy and not draining (circuit-open joins this check in phase 3).
     bool eligible() const noexcept { return state.load(std::memory_order_acquire) == BackendState::Healthy; }
 
+    // Health checks only move a backend between healthy and unhealthy: a draining backend
+    // is being removed on purpose and stays draining (plan VIII). True if the state changed.
+    // Marking down closes the idle pooled connections at once (plan IV.5).
+    bool mark_unhealthy() noexcept;
+    bool mark_healthy() noexcept;
+
+    // Active health-check results (written by the health thread, read for the dashboard).
+    std::atomic<std::uint64_t> probes{0};
+    std::atomic<std::uint32_t> probe_failures_in_a_row{0};
+    std::atomic<std::uint32_t> probe_successes_in_a_row{0};
+    void set_last_probe_error(std::string error);
+    std::string last_probe_error() const;
+
     BackendStats stats() const;
+
+private:
+    mutable std::mutex probe_error_mutex_;
+    std::string last_probe_error_;
 };
 
 }  // namespace lb::backend

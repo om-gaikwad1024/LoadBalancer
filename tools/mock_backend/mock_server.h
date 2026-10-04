@@ -26,6 +26,7 @@ struct MockFaults {
     bool echo_headers = false;  // response body = the received request line and headers
     bool echo_body = false;     // response body = the received (de-chunked) request body; after the head if both
     int health_status = 200;    // status of the health path; other faults never apply to it
+    std::uint32_t health_latency_ms = 0;  // sleep before answering the health path (slow probe)
     std::uint32_t body_bytes = 2;  // size of a normal 200 body ("ok", padded with '.')
 };
 

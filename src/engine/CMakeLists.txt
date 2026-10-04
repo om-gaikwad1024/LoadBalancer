@@ -13,6 +13,9 @@ add_library(lb_engine STATIC
   backend/registry.cpp
   balance/group_balancer.h
   balance/group_balancer.cpp
+  health/hysteresis.h
+  health/health_checker.h
+  health/health_checker.cpp
   config/config.h
   config/config_loader.h
   config/config_loader.cpp

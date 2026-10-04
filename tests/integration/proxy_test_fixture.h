@@ -47,10 +47,12 @@ private:
 
 class ProxyTest : public ::testing::Test {
 protected:
-    // In-process mock backend.
-    std::uint16_t start_backend(const mock::MockFaults& faults = {}, const std::string& id = "b1") {
+    // In-process mock backend; port 0 = ephemeral (a fixed port restarts a killed backend).
+    std::uint16_t start_backend(const mock::MockFaults& faults = {}, const std::string& id = "b1",
+                                std::uint16_t port = 0) {
         mock::MockOptions o;
         o.id = id;
+        o.port = port;
         o.faults = faults;
         backends_.push_back(std::make_unique<mock::MockServer>(std::move(o)));
         std::string error;
