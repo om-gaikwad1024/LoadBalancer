@@ -83,6 +83,11 @@ public:
     // Maintenance: closes connections idle for longer than idle_timeout.
     std::size_t close_expired(TimePoint now);
 
+    // Hot reload (plan IV.14): new limits for later acquires and releases. Idle connections
+    // over the new max_idle are closed (returns how many); queued tickets beyond a smaller
+    // max_waiters keep waiting. Busy connections are never cut.
+    std::size_t set_limits(const PoolLimits& limits);
+
     PoolStats stats() const;
 
 private:

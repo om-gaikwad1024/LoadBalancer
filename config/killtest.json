@@ -34,7 +34,8 @@
                     },
     "metrics":  {
                     "slice_ms":  1000,
-                    "window_slices":  10
+                    "window_slices":  10,
+                    "max_backend_series":  256
                 },
     "event_log":  {
                       "path":  "logs/kill-events.jsonl",
@@ -98,5 +99,9 @@
                ],
     "routing":  {
                     "default_group":  "web"
-                }
+                },
+    "config_reload":  {
+                          "watch_file":  false,
+                          "debounce_ms":  300
+                      }
 }

@@ -51,9 +51,11 @@ BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
     ON_NOTIFY(NM_CUSTOMDRAW, IDC_BACKENDS, &CMainDlg::OnBackendsCustomDraw)
 END_MESSAGE_MAP()
 
-CMainDlg::CMainDlg(lb::Engine& engine, const lb::ConfigSnapshot& config, bool start_minimized, CWnd* parent)
+CMainDlg::CMainDlg(lb::Engine& engine, const lb::ConfigSnapshot& config, std::filesystem::path config_path,
+                   bool start_minimized, CWnd* parent)
     : CDialogEx(IDD_MAIN, parent),
       engine_(engine),
+      config_path_(std::move(config_path)),
       refresh_ms_(config.dashboard.publish_interval_ms),
       event_rows_(config.dashboard.event_rows),
       start_minimized_(start_minimized) {}
@@ -92,6 +94,11 @@ BOOL CMainDlg::OnInitDialog() {
     }
     engine_running_ = true;
     SetTimer(kRefreshTimer, refresh_ms_, nullptr);
+    // Hot reload: the proxy keeps running without it, so a watch failure is only a warning.
+    if (!engine_.watch_config_file(config_path_, &error)) {
+        AfxMessageBox(L"The proxy is running, but config changes will not be picked up:\n\n" + app::from_utf8(error),
+                      MB_ICONWARNING | MB_OK);
+    }
 
     CRect client;
     GetClientRect(&client);
@@ -204,10 +211,13 @@ void CMainDlg::render_status(const lb::DashboardSnapshot& s) {
     const auto& sys = s.metrics.system;
     CString text;
     text.Format(L"Listening on %s:%u · %u workers · up %s · backends: %zu healthy, %zu unhealthy, "
-                L"%zu draining · %llu open connections · %.1f req/s · %.2f%% errors (last %.0f s)",
+                L"%zu draining · %llu open connections · %.1f req/s · %.2f%% errors (last %.0f s) · "
+                L"reloads: %llu applied, %llu rejected",
                 app::from_utf8(s.listen_address).GetString(), s.listen_port, s.workers, uptime(s.uptime_seconds).GetString(),
                 healthy, unhealthy, draining, static_cast<unsigned long long>(s.stats.connections_active),
-                sys.requests_per_second, 100.0 * sys.error_rate, s.metrics.window_seconds);
+                sys.requests_per_second, 100.0 * sys.error_rate, s.metrics.window_seconds,
+                static_cast<unsigned long long>(s.stats.reloads_accepted),
+                static_cast<unsigned long long>(s.stats.reloads_rejected));
     SetDlgItemTextW(IDC_STATUS, text);
 }
 

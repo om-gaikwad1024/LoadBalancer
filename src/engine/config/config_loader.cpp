@@ -295,9 +295,20 @@ void build_pool(const json& root, Validator& v, ConfigSnapshot& out) {
 void build_metrics(const json& root, Validator& v, ConfigSnapshot& out) {
     const std::string path = "/metrics";
     const json* j = Validator::field(root, "metrics");
-    if (j == nullptr || !v.check_object(*j, path, {"slice_ms", "window_slices"})) return;
+    if (j == nullptr || !v.check_object(*j, path, {"slice_ms", "window_slices", "max_backend_series"})) return;
     if (auto n = v.get_uint(*j, path, "slice_ms", 100, 60'000)) out.metrics.slice_ms = static_cast<std::uint32_t>(*n);
     if (auto n = v.get_uint(*j, path, "window_slices", 1, 120)) out.metrics.window_slices = static_cast<std::uint32_t>(*n);
+    if (auto n = v.get_uint(*j, path, "max_backend_series", 1, 4096)) {
+        out.metrics.max_backend_series = static_cast<std::uint32_t>(*n);
+    }
+}
+
+void build_config_reload(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/config_reload";
+    const json* j = Validator::field(root, "config_reload");
+    if (j == nullptr || !v.check_object(*j, path, {"watch_file", "debounce_ms"})) return;
+    if (auto b = v.get_bool(*j, path, "watch_file")) out.config_reload.watch_file = *b;
+    if (auto n = v.get_uint(*j, path, "debounce_ms", 10, 60'000)) out.config_reload.debounce_ms = static_cast<std::uint32_t>(*n);
 }
 
 void build_event_log(const json& root, Validator& v, ConfigSnapshot& out) {
@@ -596,8 +607,10 @@ ConfigLoadResult parse_config(std::string_view json_text) {
 
     auto snapshot = std::make_shared<ConfigSnapshot>();
     if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "pool", "maintenance", "metrics",
-                                  "event_log", "dashboard", "timeouts", "trusted_proxies", "groups", "routing"})) {
+                                  "event_log", "dashboard", "config_reload", "timeouts", "trusted_proxies", "groups",
+                                  "routing"})) {
         build_metrics(root, v, *snapshot);
+        build_config_reload(root, v, *snapshot);
         build_dashboard(root, v, *snapshot);
         build_event_log(root, v, *snapshot);
         build_trusted_proxies(root, v, *snapshot);
@@ -610,6 +623,11 @@ ConfigLoadResult parse_config(std::string_view json_text) {
         build_timeouts(root, v, *snapshot);
         const bool groups_valid = build_groups(root, v, *snapshot);
         build_routing(root, v, *snapshot, groups_valid);
+        std::size_t backends = 0;
+        for (const auto& g : snapshot->groups) backends += g.backends.size();
+        if (groups_valid && snapshot->metrics.max_backend_series != 0 && backends > snapshot->metrics.max_backend_series) {
+            v.error("/metrics/max_backend_series", "smaller than the number of backends (" + std::to_string(backends) + ")");
+        }
     }
 
     if (v.errors.empty()) {

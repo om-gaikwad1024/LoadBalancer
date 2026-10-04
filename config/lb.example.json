@@ -34,7 +34,8 @@
   },
   "metrics": {
     "slice_ms": 1000,
-    "window_slices": 10
+    "window_slices": 10,
+    "max_backend_series": 256
   },
   "event_log": {
     "path": "logs/lb-events.jsonl",
@@ -47,6 +48,10 @@
   "dashboard": {
     "publish_interval_ms": 500,
     "event_rows": 500
+  },
+  "config_reload": {
+    "watch_file": true,
+    "debounce_ms": 300
   },
   "timeouts": {
     "client_header_ms": 10000,

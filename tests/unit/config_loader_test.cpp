@@ -26,7 +26,8 @@ json good_config() {
       "pool": { "max_connections_per_backend": 128, "max_idle_per_backend": 32, "idle_timeout_ms": 30000,
                 "max_waiters_per_backend": 500, "wait_timeout_ms": 1000, "fail_fast_connect": false },
       "maintenance": { "interval_ms": 250 },
-      "metrics": { "slice_ms": 1000, "window_slices": 10 },
+      "metrics": { "slice_ms": 1000, "window_slices": 10, "max_backend_series": 64 },
+      "config_reload": { "watch_file": true, "debounce_ms": 250 },
       "dashboard": { "publish_interval_ms": 250, "event_rows": 300 },
       "event_log": { "path": "logs/events.jsonl", "max_file_bytes": 1048576, "max_files": 3, "max_queue": 1000,
                      "recent_events": 200, "trace_requests": true },
@@ -129,6 +130,9 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.maintenance.interval_ms, 250u);
     EXPECT_EQ(c.metrics.slice_ms, 1000u);
     EXPECT_EQ(c.metrics.window_slices, 10u);
+    EXPECT_EQ(c.metrics.max_backend_series, 64u);
+    EXPECT_TRUE(c.config_reload.watch_file);
+    EXPECT_EQ(c.config_reload.debounce_ms, 250u);
     EXPECT_EQ(c.dashboard.publish_interval_ms, 250u);
     EXPECT_EQ(c.dashboard.event_rows, 300u);
     EXPECT_EQ(c.event_log.path, "logs/events.jsonl");
@@ -308,6 +312,10 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/pool/fail_fast_connect", "true", "expected true or false"},
     BadValueCase{"/maintenance/interval_ms", 9, "between 10 and 60000"},
     BadValueCase{"/metrics/slice_ms", 99, "between 100 and 60000"},
+    BadValueCase{"/metrics/max_backend_series", 2, "smaller than the number of backends (3)"},
+    BadValueCase{"/metrics/max_backend_series", 4097, "between 1 and 4096"},
+    BadValueCase{"/config_reload/watch_file", 1, "expected true or false"},
+    BadValueCase{"/config_reload/debounce_ms", 9, "between 10 and 60000"},
     BadValueCase{"/dashboard/publish_interval_ms", 49, "between 50 and 10000"},
     BadValueCase{"/dashboard/event_rows", 9, "between 10 and 100000"},
     BadValueCase{"/metrics/window_slices", 0, "between 1 and 120"},

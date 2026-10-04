@@ -15,6 +15,7 @@ add_executable(lb_unit_tests
   unit/hysteresis_test.cpp
   unit/metrics_test.cpp
   unit/event_log_test.cpp
+  unit/config_reload_test.cpp
 )
 target_link_libraries(lb_unit_tests PRIVATE lb_engine nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)
 lb_set_project_options(lb_unit_tests)
@@ -39,6 +40,7 @@ add_executable(lb_integration_tests
   integration/proxy_health_test.cpp
   integration/proxy_observability_test.cpp
   integration/dashboard_test.cpp
+  integration/proxy_reload_test.cpp
 )
 target_link_libraries(lb_integration_tests PRIVATE
   lb_engine mock_backend_lib nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)

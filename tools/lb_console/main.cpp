@@ -3,6 +3,7 @@
 //   lb_console --config config\lb.example.json
 // Commands on stdin (one per line), for scripts:
 //   metrics <file>   write metrics, engine stats and backend states as JSON to <file>
+//   reload           reload the config file now (the watcher does this on change)
 //   quit             stop gracefully (same as Ctrl+C)
 
 #include <windows.h>
@@ -108,6 +109,9 @@ int main(int argc, char** argv) {
     std::printf("lb_console %s listening on %s:%u with %u worker threads (Ctrl+C to stop)\n",
                 std::string(lb::engine_version()).c_str(), loaded.snapshot->listen.address.c_str(), engine.listen_port(),
                 engine.worker_threads());
+    if (!engine.watch_config_file(config_path, &error)) {
+        std::fprintf(stderr, "config changes will not be picked up: %s\n", error.c_str());
+    }
     std::fflush(stdout);
 
     g_stop_event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -116,7 +120,7 @@ int main(int argc, char** argv) {
     // Script commands. A closed stdin simply ends this thread; the proxy keeps running.
     // Raw ReadFile, not std::cin: a thread blocked inside the CRT would hold its stdin
     // lock while the process exits.
-    std::thread commands([&engine] {
+    std::thread commands([&engine, &config_path] {
         const HANDLE in = ::GetStdHandle(STD_INPUT_HANDLE);
         std::string buffer;
         char chunk[512];
@@ -134,6 +138,12 @@ int main(int argc, char** argv) {
                 if (line.rfind("metrics ", 0) == 0) {
                     write_metrics(engine, line.substr(8));
                     std::printf("metrics written: %s\n", line.substr(8).c_str());
+                    std::fflush(stdout);
+                } else if (line == "reload") {  // the same path the file watcher takes
+                    const auto r = engine.reload_from_file(config_path);
+                    if (r.accepted) std::printf("reload applied: %s\n", r.summary.c_str());
+                    else if (r.unchanged) std::printf("reload skipped: %s\n", r.summary.c_str());
+                    else std::printf("reload rejected: %s\n", r.errors.front().c_str());
                     std::fflush(stdout);
                 } else if (line == "quit") {
                     ::SetEvent(g_stop_event);

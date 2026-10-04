@@ -27,6 +27,10 @@ add_library(lb_engine STATIC
   config/config_loader.h
   config/config_loader.cpp
   config/config_store.h
+  config/config_watcher.h
+  config/config_watcher.cpp
+  config/reload_rules.h
+  config/reload_rules.cpp
   http/http_message.h
   http/http_parser.h
   http/http_parser.cpp

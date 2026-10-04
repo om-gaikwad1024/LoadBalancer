@@ -6,12 +6,19 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 #include "backend/registry.h"
+#include "config/config_loader.h"
 #include "config/config_store.h"
+#include "config/config_watcher.h"
+#include "config/reload_rules.h"
 #include "core/timer_service.h"
 #include "health/health_checker.h"
 #include "log/event_log.h"
@@ -94,14 +101,11 @@ public:
             *error = "no configuration (the config was rejected or never loaded)";
             return false;
         }
-        backends_.load(*config);
-
         origin_ = Clock::now();
         events_ = std::make_unique<log::EventLog>(config->event_log, origin_);
         if (!events_->start(error)) return false;
-        std::vector<std::string> ids;
-        for (const auto& b : backends_.all()) ids.push_back(b->id);
-        metrics_ = std::make_unique<metrics::Metrics>(std::move(ids), config->metrics, origin_);
+        metrics_ = std::make_unique<metrics::Metrics>(backend_ids(*config), config->metrics, origin_);
+        backends_.load(config, [this](const std::string& id) { return metrics_->register_series(id); });
         ctx_.metrics = metrics_.get();
         ctx_.events = events_.get();
 
@@ -116,22 +120,7 @@ public:
                            [this] { backends_.sweep(Clock::now()); });
         started_ = true;
 
-        // Plan IV.16: every health transition is logged with its reason and probe count.
-        const auto on_transition = [this](const health::HealthTransition& t) {
-            (t.up ? counters_.backends_marked_up : counters_.backends_marked_down).fetch_add(1);
-            if (t.up) {
-                events_->emit("backend_marked_healthy",
-                              t.backend_id + " marked healthy after " + std::to_string(t.in_a_row) +
-                                  " successful probes",
-                              {{"successes", t.in_a_row}}, t.backend_id);
-            } else {
-                events_->emit("backend_marked_unhealthy",
-                              t.backend_id + " marked unhealthy after " + std::to_string(t.in_a_row) +
-                                  " failed probes: " + t.reason,
-                              {{"failures", t.in_a_row}, {"reason", t.reason}}, t.backend_id);
-            }
-        };
-        if (!health_.start(*config, backends_.all(), on_transition, error)) {
+        if (!start_health_checks(*backends_.topology(), error)) {
             stop();
             return false;
         }
@@ -160,7 +149,11 @@ public:
         stopped_ = true;
         stopping_.store(true);
         publisher_.stop();  // the dashboard gets no further snapshots once shutdown begins
-        health_.stop();
+        watcher_.stop();    // waits for a reload it is running
+        {
+            std::lock_guard lock(reload_mutex_);  // no reload is half-done past this point
+            if (health_) health_->stop();
+        }
 
         // 1. Stop accepting. Pending AcceptEx calls complete and their sockets are closed.
         if (listener_) listener_->stop();
@@ -246,6 +239,8 @@ public:
         s.backend_timeouts = counters_.backend_timeouts.load();
         s.stale_retry_successes = counters_.stale_retry_successes.load();
         s.events_dropped = events_ ? events_->dropped() : 0;
+        s.reloads_accepted = reloads_accepted_.load();
+        s.reloads_rejected = reloads_rejected_.load();
         return s;
     }
 
@@ -265,10 +260,186 @@ public:
 
     bool set_backend_state(std::string_view id, BackendState state) { return backends_.set_state(id, state); }
 
+    ReloadResult reload(std::shared_ptr<const ConfigSnapshot> next, std::string_view source,
+                        std::uint64_t content_hash = 0) {
+        std::lock_guard lock(reload_mutex_);
+        if (!started_ || stopping_.load()) return reject(source, {"the engine is not running"});
+        if (!next) return reject(source, {"no configuration"});
+        const auto active = config_.current();
+
+        std::vector<std::string> errors;
+        for (const auto& field : restart_only_changes(*active, *next)) {
+            errors.push_back(field + " changed: this field needs a restart");
+        }
+        if (!metrics_->has_room_for(backend_ids(*next))) {
+            errors.push_back("metrics.max_backend_series (" + std::to_string(active->metrics.max_backend_series) +
+                             ") is used up by the backend ids seen since start: restart to reset it");
+        }
+        if (!errors.empty()) return reject(source, std::move(errors));
+
+        // Validated: swap the backends and the config, then the health checks. From here
+        // on nothing can fail the reload.
+        const auto changes =
+            backends_.reconcile(next, [this](const std::string& id) { return metrics_->register_series(id); });
+        config_.publish(next);
+        content_hash_ = content_hash;
+        std::string health_error;
+        if (!start_health_checks(*backends_.topology(), &health_error)) {
+            events_->emit("health_checks_not_restarted",
+                          "health checks keep their previous settings after the reload: " + health_error,
+                          {{"error", health_error}});
+        }
+
+        ReloadResult result;
+        result.accepted = true;
+        const auto list = [](const std::vector<std::string>& ids) {
+            std::string out;
+            for (const auto& id : ids) out += (out.empty() ? "" : ",") + id;
+            return out;
+        };
+        std::vector<std::string> parts;
+        if (!changes.added.empty()) parts.push_back("added " + list(changes.added));
+        if (!changes.removed.empty()) parts.push_back("removed " + list(changes.removed));
+        if (!changes.reweighted.empty()) parts.push_back("reweighted " + list(changes.reweighted));
+        if (parts.empty()) parts.push_back("backends unchanged");
+        for (const auto& part : parts) result.summary += (result.summary.empty() ? "" : "; ") + part;
+        reloads_accepted_.fetch_add(1);
+        events_->emit("config_reload_accepted", "config reloaded (" + std::string(source) + "): " + result.summary,
+                      {{"source", source},
+                       {"added", changes.added},
+                       {"removed", changes.removed},
+                       {"reweighted", changes.reweighted},
+                       {"backends", backends_.all().size()}});
+        return result;
+    }
+
+    ReloadResult reload_from_text(std::string_view text, std::string_view source) {
+        const std::uint64_t hash = config_content_hash(text);
+        {
+            std::lock_guard lock(reload_mutex_);
+            if (content_hash_ != 0 && hash == content_hash_) {
+                ReloadResult r;
+                r.unchanged = true;
+                r.summary = "content matches the active config";
+                return r;
+            }
+        }
+        const auto loaded = parse_config(text);
+        if (!loaded.ok()) {
+            std::vector<std::string> errors;
+            for (const auto& e : loaded.errors) errors.push_back(lb::to_string(e));
+            std::lock_guard lock(reload_mutex_);
+            return reject(source, std::move(errors));
+        }
+        return reload(loaded.snapshot, source, hash);
+    }
+
+    ReloadResult reload_from_file(const std::filesystem::path& path, std::string_view source) {
+        std::string text;
+        if (!read_file(path, &text)) {
+            std::lock_guard lock(reload_mutex_);
+            return reject(source, {"cannot read " + utf8(path)});
+        }
+        return reload_from_text(text, source);
+    }
+
+    bool watch_config_file(const std::filesystem::path& path, std::string* error) {
+        if (!started_ || stopping_.load()) {
+            *error = "the engine is not running";
+            return false;
+        }
+        const auto config = config_.current();
+        if (!config->config_reload.watch_file) return true;  // reload stays available through the API
+        std::string text;
+        if (!read_file(path, &text)) {
+            *error = "cannot read " + utf8(path);
+            return false;
+        }
+        {
+            std::lock_guard lock(reload_mutex_);
+            content_hash_ = config_content_hash(text);
+        }
+        if (!watcher_.start(path, std::chrono::milliseconds(config->config_reload.debounce_ms),
+                            [this, path] { reload_from_file(path, "file"); }, error)) {
+            return false;
+        }
+        events_->emit("config_watch_started",
+                      "watching " + utf8(path) + " for changes (debounce " +
+                          std::to_string(config->config_reload.debounce_ms) + " ms)",
+                      {{"path", utf8(path)}, {"debounce_ms", config->config_reload.debounce_ms}});
+        return true;
+    }
+
     void set_trace_sink(TraceSink* sink) noexcept { trace_.store(sink, std::memory_order_release); }
     void set_snapshot_sink(SnapshotSink* sink) noexcept { sink_.store(sink, std::memory_order_release); }
 
 private:
+    static std::vector<std::string> backend_ids(const ConfigSnapshot& config) {
+        std::vector<std::string> ids;
+        for (const auto& g : config.groups) {
+            for (const auto& b : g.backends) ids.push_back(b.id);
+        }
+        return ids;
+    }
+
+    static std::string utf8(const std::filesystem::path& p) {
+        const auto u8 = p.u8string();
+        return std::string(u8.begin(), u8.end());
+    }
+
+    static bool read_file(const std::filesystem::path& path, std::string* text) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) return false;
+        text->assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return !in.bad();
+    }
+
+    // Caller holds reload_mutex_.
+    ReloadResult reject(std::string_view source, std::vector<std::string> errors) {
+        reloads_rejected_.fetch_add(1);
+        std::string message = "config reload (" + std::string(source) +
+                              ") rejected, still running the previous config: " + errors.front();
+        if (errors.size() > 1) message += " (+" + std::to_string(errors.size() - 1) + " more)";
+        if (events_) events_->emit("config_reload_rejected", message, {{"source", source}, {"errors", errors}});
+        ReloadResult r;
+        r.errors = std::move(errors);
+        return r;
+    }
+
+    // Plan IV.10: one probe per backend of the topology. On a reload the checker restarts
+    // only if a backend or a group's health settings changed. The new checker starts
+    // before the old one stops, so if it cannot start the old one keeps probing.
+    bool start_health_checks(const backend::Topology& topology, std::string* error) {
+        std::vector<std::pair<const backend::BackendRuntime*, HealthConfig>> targets;
+        for (const auto& b : topology.backends) {
+            const GroupConfig* g = topology.config->find_group(b->group);
+            targets.emplace_back(b.get(), g != nullptr ? g->health : HealthConfig{});
+        }
+        if (health_ && targets == health_targets_) return true;
+
+        // Plan IV.16: every health transition is logged with its reason and probe count.
+        const auto on_transition = [this](const health::HealthTransition& t) {
+            (t.up ? counters_.backends_marked_up : counters_.backends_marked_down).fetch_add(1);
+            if (t.up) {
+                events_->emit("backend_marked_healthy",
+                              t.backend_id + " marked healthy after " + std::to_string(t.in_a_row) +
+                                  " successful probes",
+                              {{"successes", t.in_a_row}}, t.backend_id);
+            } else {
+                events_->emit("backend_marked_unhealthy",
+                              t.backend_id + " marked unhealthy after " + std::to_string(t.in_a_row) +
+                                  " failed probes: " + t.reason,
+                              {{"failures", t.in_a_row}, {"reason", t.reason}}, t.backend_id);
+            }
+        };
+        auto next = std::make_unique<health::HealthChecker>();
+        if (!next->start(*topology.config, topology.backends, on_transition, error)) return false;
+        if (health_) health_->stop();
+        health_ = std::move(next);
+        health_targets_ = std::move(targets);
+        return true;
+    }
+
     // Publisher thread (plan IV.17): a copied snapshot for the UI, plus the event-log
     // entries added since the previous one. The UI never reads engine state itself.
     void publish() noexcept {
@@ -303,7 +474,8 @@ private:
     backend::BackendRegistry backends_;
     TimerService timers_;
     PeriodicThread maintenance_;
-    health::HealthChecker health_;
+    std::unique_ptr<health::HealthChecker> health_;
+    std::vector<std::pair<const backend::BackendRuntime*, HealthConfig>> health_targets_;
     net::WorkerPool workers_;
     std::unique_ptr<net::Listener> listener_;
     proxy::SessionRegistry registry_;
@@ -320,6 +492,11 @@ private:
     std::string listen_address_;
     std::uint64_t publish_sequence_ = 0;      // publisher thread only
     std::uint64_t last_published_event_ = 0;  // publisher thread only
+    std::mutex reload_mutex_;         // one reload at a time; also guards content_hash_
+    std::uint64_t content_hash_ = 0;  // of the active config's file content; 0 = unknown
+    std::atomic<std::uint64_t> reloads_accepted_{0};
+    std::atomic<std::uint64_t> reloads_rejected_{0};
+    ConfigWatcher watcher_;
     PeriodicThread publisher_;  // declared last: stopped (and destroyed) first
     bool started_ = false;
     bool stopped_ = false;
@@ -339,6 +516,16 @@ MetricsSnapshot Engine::metrics() const { return impl_->metrics(); }
 std::vector<LoggedEvent> Engine::recent_events() const { return impl_->recent_events(); }
 bool Engine::set_backend_state(std::string_view backend_id, BackendState state) {
     return impl_->set_backend_state(backend_id, state);
+}
+ReloadResult Engine::reload(std::shared_ptr<const ConfigSnapshot> next, std::string_view source) {
+    return impl_->reload(std::move(next), source);
+}
+ReloadResult Engine::reload_from_text(std::string_view json_text, std::string_view source) {
+    return impl_->reload_from_text(json_text, source);
+}
+ReloadResult Engine::reload_from_file(const std::filesystem::path& path) { return impl_->reload_from_file(path, "file"); }
+bool Engine::watch_config_file(const std::filesystem::path& path, std::string* error) {
+    return impl_->watch_config_file(path, error);
 }
 void Engine::set_trace_sink(TraceSink* sink) noexcept { impl_->set_trace_sink(sink); }
 void Engine::set_snapshot_sink(SnapshotSink* sink) noexcept { impl_->set_snapshot_sink(sink); }

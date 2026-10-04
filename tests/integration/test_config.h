@@ -45,7 +45,8 @@ inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& b
           {"wait_timeout_ms", 2000},
           {"fail_fast_connect", true}}},
         {"maintenance", {{"interval_ms", 50}}},
-        {"metrics", {{"slice_ms", 1000}, {"window_slices", 10}}},
+        {"metrics", {{"slice_ms", 1000}, {"window_slices", 10}, {"max_backend_series", 64}}},
+        {"config_reload", {{"watch_file", false}, {"debounce_ms", 200}}},
         {"dashboard", {{"publish_interval_ms", 500}, {"event_rows", 500}}},
         {"event_log",
          {{"path", ""},  // in memory only unless a test asks for a file

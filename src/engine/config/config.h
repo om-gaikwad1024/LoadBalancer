@@ -41,6 +41,15 @@ struct PoolConfig {
 struct MetricsConfig {
     std::uint32_t slice_ms = 0;
     std::uint32_t window_slices = 0;
+    // Distinct backend ids tracked since start (removed ones keep their series), so
+    // backends added by hot reload get a series without reallocating live histograms.
+    std::uint32_t max_backend_series = 0;
+};
+
+// Hot reload (plan IV.14). Both fields need a restart to change.
+struct ConfigReloadConfig {
+    bool watch_file = false;        // watch the config file and apply valid changes
+    std::uint32_t debounce_ms = 0;  // quiet time after the last write before reading the file
 };
 
 // Event log (plan IV.16): JSON lines written by a background thread, size-based rotation.
@@ -102,6 +111,8 @@ struct HealthConfig {
     std::uint32_t timeout_ms = 0;           // per probe, <= interval_ms
     std::uint32_t unhealthy_threshold = 0;  // N consecutive failures: marked down
     std::uint32_t healthy_threshold = 0;    // M consecutive successes: marked up again
+
+    bool operator==(const HealthConfig&) const = default;
 };
 
 enum class HostHeaderMode : std::uint8_t {
@@ -156,6 +167,7 @@ struct ConfigSnapshot {
     MetricsConfig metrics;
     EventLogConfig event_log;
     DashboardConfig dashboard;
+    ConfigReloadConfig config_reload;
     TimeoutsConfig timeouts;
     std::vector<GroupConfig> groups;
     RoutingConfig routing;

@@ -3,6 +3,7 @@
 #include "framework.h"
 #include "resource.h"
 
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -28,7 +29,8 @@ class CMainDlg : public CDialogEx {
 public:
     enum { IDD = IDD_MAIN };
 
-    CMainDlg(lb::Engine& engine, const lb::ConfigSnapshot& config, bool start_minimized, CWnd* parent = nullptr);
+    CMainDlg(lb::Engine& engine, const lb::ConfigSnapshot& config, std::filesystem::path config_path,
+             bool start_minimized, CWnd* parent = nullptr);
 
     int exit_code() const noexcept { return exit_code_; }
 
@@ -59,6 +61,7 @@ private:
     int scale(int pixels) const;
 
     lb::Engine& engine_;
+    const std::filesystem::path config_path_;  // watched for hot reload (plan IV.14)
     const std::uint32_t refresh_ms_;
     const std::uint32_t event_rows_;
     const bool start_minimized_;

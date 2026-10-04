@@ -441,7 +441,10 @@ void ClientSession::on_request_head() {
         request_started_ = true;
     }
 
-    config_ = ctx_.config->current();
+    // One capture per request: the config and the backends it names come from the same
+    // reload, and stay fixed for this request even if a reload lands meanwhile (IV.14).
+    topology_ = ctx_.backends->topology();
+    config_ = topology_->config;
     timeouts_ = config_->timeouts;
     request_head_seen_ = true;
     const bool peer_trusted = config_->is_trusted_proxy(peer_address_);
@@ -454,7 +457,7 @@ void ClientSession::on_request_head() {
 
     // Phase 1 routing: every request goes to the default group (content routing: step 2.3).
     // The group's balancer picks among healthy, non-draining backends (plan IV.7).
-    if (const auto group = ctx_.backends->find_group(config_->routing.default_group)) backend_rt_ = group->pick();
+    if (const auto group = topology_->find_group(config_->routing.default_group)) backend_rt_ = group->pick();
     if (!backend_rt_) {
         // Plan IV.7/VI: no eligible backend is answered at once with 503, never a hang, and
         // logged loudly: this is the one case where clients correctly see an error.
@@ -645,6 +648,7 @@ void ClientSession::reset_for_next_request() {
     backend_out_sent_ = 0;
     backend_in_.clear();
     config_.reset();
+    topology_.reset();
     backend_rt_.reset();
     request_id_ = 0;
     stage_ = Stage::Request;

@@ -54,7 +54,8 @@ BOOL CLoadBalancerApp::InitInstance() {
         options.config_path = pick.GetPathName();
     }
 
-    const auto loaded = lb::load_config_file(std::filesystem::path(std::wstring(options.config_path)));
+    const std::filesystem::path config_path(std::wstring(options.config_path));
+    const auto loaded = lb::load_config_file(config_path);
     if (!loaded.ok()) {
         CString message = L"The configuration was rejected; nothing was started.\n\n" + options.config_path + L"\n\n";
         for (const auto& e : loaded.errors) message += app::from_utf8(lb::to_string(e)) + L"\n";
@@ -64,7 +65,7 @@ BOOL CLoadBalancerApp::InitInstance() {
     }
 
     lb::Engine engine(loaded.snapshot);
-    CMainDlg dlg(engine, *loaded.snapshot, options.minimized);
+    CMainDlg dlg(engine, *loaded.snapshot, config_path, options.minimized);
     m_pMainWnd = &dlg;
     dlg.DoModal();
     exit_code_ = dlg.exit_code();

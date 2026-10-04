@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -33,6 +34,16 @@ struct EngineStats {
     std::uint64_t backend_timeouts = 0;  // plan VI: connect, response headers, idle
     std::uint64_t stale_retry_successes = 0;  // stale retries that got a response
     std::uint64_t events_dropped = 0;    // event-log entries lost because the writer fell behind
+    std::uint64_t reloads_accepted = 0;  // plan IV.14: configs swapped in while running
+    std::uint64_t reloads_rejected = 0;  // invalid or restart-only changes; the old config stays
+};
+
+// Outcome of a hot reload (plan IV.14). A rejected reload changes nothing.
+struct ReloadResult {
+    bool accepted = false;
+    bool unchanged = false;           // the file's content equals the active config: skipped
+    std::vector<std::string> errors;  // why it was rejected
+    std::string summary;              // what an accepted reload changed
 };
 
 // Everything the dashboard shows, copied on an engine thread (plan IV.17, V). The UI
@@ -95,6 +106,23 @@ public:
     // Operator/health-check entry point: unhealthy or draining backends stop receiving new
     // requests and their idle pooled connections are closed at once. False if the id is unknown.
     bool set_backend_state(std::string_view backend_id, BackendState state);
+
+    // Hot reload (plan IV.14): validates everything first, then swaps the config and the
+    // backend set atomically. In-flight requests finish on the snapshot they started with;
+    // new requests see the complete new one. A change to a restart-only field (listener,
+    // worker count, metrics window, event log, dashboard, config_reload) rejects the whole
+    // reload. Every outcome is logged (config_reload_accepted / config_reload_rejected).
+    // `source` names the trigger in the log ("file", "api", later "gui").
+    ReloadResult reload(std::shared_ptr<const ConfigSnapshot> next, std::string_view source = "api");
+    // Parses and validates `json_text`, then reloads. Skipped as unchanged if its content
+    // hash equals the active config's (so a GUI save is not reloaded again by the watcher).
+    ReloadResult reload_from_text(std::string_view json_text, std::string_view source);
+    ReloadResult reload_from_file(const std::filesystem::path& path);
+
+    // After start(): when config_reload.watch_file is true, reloads `path` whenever it
+    // changes, debounced by config_reload.debounce_ms. The file's current content is taken
+    // as the active config's. Returns false (and fills *error) if the file cannot be watched.
+    bool watch_config_file(const std::filesystem::path& path, std::string* error);
 
     // Optional per-step trace (plan IV.18). Set before start(); the sink must outlive the engine run.
     void set_trace_sink(TraceSink* sink) noexcept;

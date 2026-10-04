@@ -1,5 +1,6 @@
 #include "metrics/metrics.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
@@ -57,9 +58,41 @@ StatusClass status_class(int http_status) noexcept {
 }
 
 Metrics::Metrics(std::vector<std::string> backend_ids, const MetricsConfig& config, TimePoint origin)
-    : instance_id_(g_next_instance.fetch_add(1)), ids_(std::move(backend_ids)), config_(config), origin_(origin) {}
+    : instance_id_(g_next_instance.fetch_add(1)),
+      capacity_(std::max<std::size_t>(config.max_backend_series, backend_ids.size())),
+      ids_(std::move(backend_ids)),
+      config_(config),
+      origin_(origin) {}
 
 Metrics::~Metrics() = default;
+
+std::size_t Metrics::register_series(const std::string& id) {
+    std::lock_guard lock(ids_mutex_);
+    for (std::size_t i = 0; i < ids_.size(); ++i) {
+        if (ids_[i] == id) return i + 1;
+    }
+    if (ids_.size() >= capacity_) return 0;
+    ids_.push_back(id);
+    return ids_.size();
+}
+
+bool Metrics::has_room_for(const std::vector<std::string>& ids) const {
+    std::lock_guard lock(ids_mutex_);
+    std::size_t fresh = 0;
+    for (const auto& id : ids) {
+        if (std::find(ids_.begin(), ids_.end(), id) == ids_.end()) ++fresh;
+    }
+    return ids_.size() + fresh <= capacity_;
+}
+
+Metrics::Series& Metrics::ThreadRecorder::at(std::size_t i, std::size_t slices) {
+    Series* s = series[i].load(std::memory_order_acquire);
+    if (s == nullptr) {
+        s = new Series(slices);
+        series[i].store(s, std::memory_order_release);
+    }
+    return *s;
+}
 
 std::int64_t Metrics::epoch_of(TimePoint t) const noexcept {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - origin_).count();
@@ -68,8 +101,7 @@ std::int64_t Metrics::epoch_of(TimePoint t) const noexcept {
 
 Metrics::ThreadRecorder& Metrics::local() {
     if (t_local.owner == instance_id_) return *static_cast<ThreadRecorder*>(t_local.recorder);
-    auto rec = std::make_unique<ThreadRecorder>();
-    for (std::size_t i = 0; i <= ids_.size(); ++i) rec->series.push_back(std::make_unique<Series>(config_.window_slices));
+    auto rec = std::make_unique<ThreadRecorder>(capacity_ + 1);
     ThreadRecorder* raw = rec.get();
     {
         std::lock_guard lock(recorders_mutex_);
@@ -106,9 +138,9 @@ void Metrics::record(std::size_t backend_series, TimePoint now, Duration total, 
         const std::uint64_t total_us = micros(total);
         std::optional<std::uint64_t> backend_us;
         if (backend_time) backend_us = micros(*backend_time);
-        record_series(*rec.series[0], epoch, total_us, backend_us, status);
-        if (backend_series != 0 && backend_series < rec.series.size()) {
-            record_series(*rec.series[backend_series], epoch, total_us, backend_us, status);
+        record_series(rec.at(0, config_.window_slices), epoch, total_us, backend_us, status);
+        if (backend_series != 0 && backend_series < rec.count) {
+            record_series(rec.at(backend_series, config_.window_slices), epoch, total_us, backend_us, status);
         }
     } catch (...) {
         // Allocation failure on a worker's first record: the sample is lost, the request is not.
@@ -119,7 +151,12 @@ MetricsSnapshot Metrics::snapshot(TimePoint now) const {
     const std::int64_t current = epoch_of(now);
     const std::int64_t oldest = current - static_cast<std::int64_t>(config_.window_slices) + 1;
 
-    const std::size_t n = ids_.size() + 1;
+    std::vector<std::string> ids;
+    {
+        std::lock_guard lock(ids_mutex_);
+        ids = ids_;
+    }
+    const std::size_t n = ids.size() + 1;
     std::vector<HistogramData> total_all(n), backend_all(n), total_win(n), backend_win(n);
     std::vector<std::array<std::uint64_t, kStatusClasses>> status_all(n), status_win(n);
     for (auto& a : status_all) a.fill(0);
@@ -128,8 +165,10 @@ MetricsSnapshot Metrics::snapshot(TimePoint now) const {
     {
         std::lock_guard lock(recorders_mutex_);
         for (const auto& rec : recorders_) {
-            for (std::size_t i = 0; i < n; ++i) {
-                const Series& s = *rec->series[i];
+            for (std::size_t i = 0; i < n && i < rec->count; ++i) {
+                const Series* sp = rec->series[i].load(std::memory_order_acquire);
+                if (sp == nullptr) continue;  // this thread never recorded for that series
+                const Series& s = *sp;
                 s.total.add_to(total_all[i]);
                 s.backend.add_to(backend_all[i]);
                 for (std::size_t c = 0; c < kStatusClasses; ++c) status_all[i][c] += s.status[c].load(std::memory_order_relaxed);
@@ -156,7 +195,7 @@ MetricsSnapshot Metrics::snapshot(TimePoint now) const {
     MetricsSnapshot out;
     out.window_seconds = config_.window_slices * slice_s;
     const auto fill = [&](std::size_t i, SeriesMetrics& m) {
-        m.id = i == 0 ? "*" : ids_[i - 1];
+        m.id = i == 0 ? "*" : ids[i - 1];
         m.total_window = total_win[i].stats();
         m.total_since_start = total_all[i].stats();
         m.backend_window = backend_win[i].stats();

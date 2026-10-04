@@ -158,7 +158,8 @@ private:
     std::size_t backend_out_sent_ = 0;
 
     // Per-request state.
-    std::shared_ptr<const ConfigSnapshot> config_;  // captured when the request starts (plan II.7)
+    std::shared_ptr<const backend::Topology> topology_;  // captured when the request starts (plan II.7)
+    std::shared_ptr<const ConfigSnapshot> config_;       // topology_->config
     std::uint64_t request_id_ = 0;
     std::string request_tag_;  // X-Request-Id (plan IV.6)
     bool request_head_seen_ = false;

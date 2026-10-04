@@ -65,6 +65,8 @@ void ConnectionPool::release(SOCKET s, bool reusable, TimePoint now) {
     std::vector<std::shared_ptr<PoolTicket>> wake;
     {
         std::lock_guard lock(mutex_);
+        // Over a cap lowered by a reload: close it, so the pool shrinks as requests finish.
+        if (reusable && slots_ > limits_.max_connections) reusable = false;
         if (reusable) {
             // A waiter gets the connection directly; otherwise it goes idle if there is room.
             while (!waiters_.empty()) {
@@ -151,6 +153,27 @@ std::size_t ConnectionPool::close_expired(TimePoint now) {
         }
         idle_.erase(std::remove_if(idle_.begin(), idle_.end(), expired), idle_.end());
         slots_ -= static_cast<std::uint32_t>(closed);
+        grant_waiters_locked(&wake);
+    }
+    for (auto& t : wake) t->wake();
+    return closed;
+}
+
+std::size_t ConnectionPool::set_limits(const PoolLimits& limits) {
+    std::vector<std::shared_ptr<PoolTicket>> wake;
+    std::size_t closed = 0;
+    {
+        std::lock_guard lock(mutex_);
+        limits_ = limits;
+        // Fewer idle connections allowed: close the least recently used (front) ones.
+        while (idle_.size() > limits_.max_idle) {
+            ops_.close(idle_.front().socket);
+            idle_.erase(idle_.begin());
+            --slots_;
+            ++closed;
+        }
+        // A larger cap may admit queued requests now. A smaller one is reached as
+        // connections are released; open connections are never cut (they are in use).
         grant_waiters_locked(&wake);
     }
     for (auto& t : wake) t->wake();

@@ -15,6 +15,30 @@ Format rules:
 
 Example: [`config/lb.example.json`](../config/lb.example.json).
 
+## Hot reload (plan IV.14)
+A running proxy reloads its config file when the file changes (see [`config_reload`](#config_reload-hot-reload-plan-iv14)),
+or on request (`reload` on `lb_console`'s stdin). The new document is parsed and fully validated
+first; if anything is wrong, the reload is rejected as a whole, logged as `config_reload_rejected`
+with every error, and the proxy keeps running on the previous config. A valid one is swapped in
+atomically: requests already in flight finish on the config and backends they started with, and
+every new request sees the complete new config. Nothing is ever half-applied.
+
+**When a change takes effect:**
+
+| Applies | Fields |
+|---|---|
+| Next request | `groups` (backends added or removed, weights, strategy, `host_header`), `routing`, `trusted_proxies`, `timeouts` (per request; `client_header_ms` for a connection's first request counts from the accept), `pool.wait_timeout_ms`, `pool.fail_fast_connect`, `limits.max_client_connections` |
+| At once, on each pool | `pool.max_connections_per_backend`, `pool.max_idle_per_backend`, `pool.max_waiters_per_backend`, `pool.idle_timeout_ms`. Idle connections over a lower `max_idle` are closed; a lower cap is reached as busy connections are released (they are never cut) |
+| At once | `groups[].health`: health checks restart with the new settings (only when a backend or a health setting changed). A backend's current health state is kept |
+| New client connections | `limits` (parser limits) and `buffers` |
+| **Restart only** | `listen.*`, `workers.threads`, `maintenance.interval_ms`, `metrics.*`, `event_log.*`, `dashboard.*`, `config_reload.*`. A reload that changes any of these is **rejected**, naming each field |
+
+Backends are matched by `id`. A backend whose id, address, port and group are unchanged keeps all of
+its live state: health, draining, counters, pooled connections and latency history. A reload
+never un-drains a backend (plan IV.12). A backend whose address, port or group changed counts as
+removed and added; it starts fresh but stays draining if it was. A removed backend gets no new
+requests; requests already using it finish, and its connections close as they are released.
+
 ## `listen`: client-facing listener (plan IV.1)
 | Field | Type | Valid range | Meaning |
 |---|---|---|---|
@@ -86,6 +110,7 @@ status class (1xx–5xx, plus aborted).
 |---|---|---|---|
 | `metrics.slice_ms` | integer | 100–60000 | Length of one time slice of the live window |
 | `metrics.window_slices` | integer | 1–120 | Slices in the live window. Window = `slice_ms × window_slices` (default 10 s) |
+| `metrics.max_backend_series` | integer | 1–4096, ≥ the number of backends | Per-backend latency series the engine can hold. Each backend id seen since start uses one (a removed id keeps its history, and gets it back if it returns), and each IOCP worker reserves this many series slots. A reload that would need more is rejected; restart to reset it |
 
 ## `event_log`: audit trail (plan IV.16)
 One JSON object per line. A background thread does the writing (workers only queue), and files
@@ -106,7 +131,9 @@ Events written: `engine_started`, `engine_stopped`, `backend_marked_unhealthy` (
 `failures`), `backend_marked_healthy` (`successes`), `no_backend_available`, `connection_rejected`
 (over `max_client_connections`), `pool_rejected` (`queue_full` / `wait_timeout`), `backend_error`
 (`status`, `reason`), `response_aborted`, `timeout` (client-side timeouts except keep-alive idle),
-`retry` and `retry_result` (stale pooled connection), and `request_step` in debug mode. Malformed
+`retry` and `retry_result` (stale pooled connection), `config_watch_started`,
+`config_reload_accepted` (`source`, `added`, `removed`, `reweighted`), `config_reload_rejected`
+(`source`, `errors`), `health_checks_not_restarted`, and `request_step` in debug mode. Malformed
 requests and keep-alive idle closes are counted but not logged, since they're common and
 client-controlled.
 
@@ -115,12 +142,26 @@ client-controlled.
 `--config`, it asks for a file. A rejected config is shown with every error, and nothing starts.
 The engine copies a snapshot on its own publisher thread and hands it to the UI thread as a
 posted message; the UI repaints from that copy on a timer and never reads engine state directly.
-Closing the window shuts the proxy down gracefully (`timeouts.shutdown_grace_ms`).
+Closing the window shuts the proxy down gracefully (`timeouts.shutdown_grace_ms`). The status line
+counts applied and rejected reloads, and each reload appears in the event list. If the config file
+can't be watched, a warning says so and the proxy keeps running without hot reload.
 
 | Field | Type | Valid range | Meaning |
 |---|---|---|---|
 | `dashboard.publish_interval_ms` | integer | 50–10000 | How often the engine publishes a snapshot; the UI repaints at the same rate |
 | `dashboard.event_rows` | integer | 10–100000 | Rows kept in the live event list (newest first) |
+
+## `config_reload`: hot reload (plan IV.14)
+`LoadBalancer.exe` and `lb_console` watch the file given with `--config`. The watcher listens on the
+file's directory (`ReadDirectoryChangesW`), so it also sees saves that write a temporary file and
+rename it over the config. Editors often save in several writes, so the file is read only after it
+has been quiet for `debounce_ms`. A change whose content is byte-for-byte the active config's
+(compared by a content hash) is skipped, so a save from the GUI doesn't cause a second reload.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `config_reload.watch_file` | boolean | `true` / `false` | Reload the config file automatically when it changes. With `false`, reloads happen only on request (`reload` command) |
+| `config_reload.debounce_ms` | integer | 10–60000 | Quiet time after the last change before the file is read. Every further write restarts it |
 
 ## `timeouts` (plan VI)
 Every wait has a limit, measured on the monotonic clock, so changing the system clock has no
