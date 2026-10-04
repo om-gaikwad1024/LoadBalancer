@@ -180,6 +180,10 @@ void ClientSession::complete(Pending kind, DWORD bytes, DWORD error) {
                     head_deadline_ = Clock::now() + std::chrono::milliseconds(timeouts_.client_header_ms);
                     head_deadline_set_ = true;
                 }
+                if (!request_started_) {  // total latency starts at the request's first byte
+                    request_start_ = Clock::now();
+                    request_started_ = true;
+                }
             }
             break;
         case Pending::ClientSend:
@@ -200,18 +204,19 @@ void ClientSession::complete(Pending kind, DWORD bytes, DWORD error) {
             break;
         case Pending::BackendConnect:
             if (error != 0) {
-                fail_request(502, /*backend_fault=*/true);
+                fail_request(502, /*backend_fault=*/true, "connect: " + net::wsa_error_text(static_cast<int>(error)));
                 return;
             }
             ::setsockopt(backend_, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, nullptr, 0);
             net::set_no_delay(backend_);
             backend_connected_ = true;
+            backend_ready_at_ = Clock::now();
             trace(TraceStep::BackendConnected);
             break;
         case Pending::BackendSend:
             if (error != 0) {
                 if (try_stale_retry()) break;
-                fail_request(502, /*backend_fault=*/true);
+                fail_request(502, /*backend_fault=*/true, "send: " + net::wsa_error_text(static_cast<int>(error)));
                 return;
             }
             backend_out_sent_ += bytes;
@@ -298,6 +303,7 @@ bool ClientSession::acquire_backend_connection() {
             holding_slot_ = true;
             backend_connected_ = true;
             reused_connection_ = true;
+            backend_ready_at_ = Clock::now();
             ctx_.counters->backend_connections_reused.fetch_add(1, std::memory_order_relaxed);
             trace(TraceStep::BackendConnected);
             break;
@@ -307,6 +313,9 @@ bool ClientSession::acquire_backend_connection() {
         case backend::ConnectionPool::Acquire::Rejected:
         case backend::ConnectionPool::Acquire::Queued:
             ctx_.counters->pool_rejections.fetch_add(1, std::memory_order_relaxed);
+            log_event("pool_rejected",
+                      backend_rt_->id + " is at max_connections_per_backend and its wait queue is full: 503",
+                      {{"reason", "queue_full"}});
             fail_request(503, /*backend_fault=*/false);
             break;
     }
@@ -331,13 +340,18 @@ void ClientSession::on_pool_ticket(bool session_closed) {
         holding_slot_ = true;
         backend_connected_ = true;
         reused_connection_ = true;
+        backend_ready_at_ = Clock::now();
         ctx_.counters->backend_connections_reused.fetch_add(1, std::memory_order_relaxed);
         trace(TraceStep::BackendConnected);
     } else if (t->may_connect) {
         holding_slot_ = true;
     } else {
         ctx_.counters->pool_rejections.fetch_add(1, std::memory_order_relaxed);
-        fail_request(503, /*backend_fault=*/false);  // waited wait_timeout_ms for a slot
+        log_event("pool_rejected",
+                  "waited " + std::to_string(config_->pool.wait_timeout_ms) + " ms for a connection to " +
+                      backend_rt_->id + ": 503",
+                  {{"reason", "wait_timeout"}});
+        fail_request(503, /*backend_fault=*/false);
     }
 }
 
@@ -376,6 +390,9 @@ bool ClientSession::try_stale_retry() {
     if (!reused_connection_ || stale_retried_ || !retry_safe_ || backend_bytes_received_ > 0) return false;
     stale_retried_ = true;
     ctx_.counters->stale_retries.fetch_add(1, std::memory_order_relaxed);
+    log_event("retry", "pooled connection to " + backend_rt_->id +
+                           " was closed by the backend before any response; resending on a fresh connection",
+              {{"reason", "stale_pooled_connection"}});
     close_backend(false);
     backend_out_ = retry_head_;
     backend_out_sent_ = 0;
@@ -408,6 +425,8 @@ void ClientSession::process_client_input() {
             request_done_ = true;
             break;
         case http::ParseEvent::Error:
+            // Not logged: malformed input is common and attacker-controlled; it is counted
+            // in the metrics as a 4xx/5xx and answered (plan IV.3).
             fail_request(request_parser_.error().status, /*backend_fault=*/false);
             break;
     }
@@ -416,13 +435,17 @@ void ClientSession::process_client_input() {
 void ClientSession::on_request_head() {
     const http::RequestHead& req = request_parser_.request();
     request_id_ = ctx_.next_request_id->fetch_add(1, std::memory_order_relaxed) + 1;
-    trace(TraceStep::RequestReceived);
+    if (!request_started_) {  // a pipelined request parsed from already-buffered bytes
+        request_start_ = Clock::now();
+        request_started_ = true;
+    }
 
     config_ = ctx_.config->current();
     timeouts_ = config_->timeouts;
     request_head_seen_ = true;
     const bool peer_trusted = config_->is_trusted_proxy(peer_address_);
     request_tag_ = choose_request_id(req.fields, peer_trusted, ctx_.request_ids->make(request_id_));
+    trace(TraceStep::RequestReceived);
     client_version_ = req.version;
     request_keep_alive_ = req.keep_alive;
     is_head_ = req.method == "HEAD";
@@ -432,9 +455,12 @@ void ClientSession::on_request_head() {
     // The group's balancer picks among healthy, non-draining backends (plan IV.7).
     if (const auto group = ctx_.backends->find_group(config_->routing.default_group)) backend_rt_ = group->pick();
     if (!backend_rt_) {
-        // Plan IV.7/VI: no eligible backend is answered at once with 503, never a hang.
-        // Counted here; the event log records it loudly from step 1.9.
+        // Plan IV.7/VI: no eligible backend is answered at once with 503, never a hang, and
+        // logged loudly: this is the one case where clients correctly see an error.
         ctx_.counters->no_backend_available.fetch_add(1, std::memory_order_relaxed);
+        log_event("no_backend_available",
+                  "no healthy, non-draining backend in group " + config_->routing.default_group + ": 503",
+                  {{"group", config_->routing.default_group}});
         fail_request(503, /*backend_fault=*/false);
         return;
     }
@@ -442,6 +468,7 @@ void ClientSession::on_request_head() {
     backend_rt_->in_flight.fetch_add(1, std::memory_order_relaxed);
     backend_rt_->requests.fetch_add(1, std::memory_order_relaxed);
     backend_in_use_ = true;
+    metrics_series_ = backend_rt_->metrics_series;
     trace(TraceStep::BackendSelected);
 
     // The proxy answers Expect: 100-continue itself and strips it, so the client sends
@@ -490,10 +517,11 @@ void ClientSession::process_backend_input() {
                 break;
             }
             if (client_mode_ == ClientBodyMode::Chunked) append_last_chunk(client_out_);
+            backend_done_at_ = Clock::now();
             response_done_ = true;
             break;
         case http::ParseEvent::Error:
-            backend_response_failed();
+            backend_response_failed(std::string("bad response: ") + std::string(response_parser_.error().detail));
             break;
     }
 }
@@ -520,26 +548,39 @@ void ClientSession::handle_backend_eof() {
     const auto r = response_parser_.finish();
     if (r.event == http::ParseEvent::MessageComplete && response_started_ && !interim_) {
         if (client_mode_ == ClientBodyMode::Chunked) append_last_chunk(client_out_);
+        backend_done_at_ = Clock::now();
         response_done_ = true;  // close-delimited body ended
         return;
     }
-    backend_response_failed();
+    backend_response_failed("connection closed before the response was complete");
 }
 
 // The backend broke its response. If nothing reached the client yet, answer 502;
 // otherwise close the client connection so it sees an incomplete response rather
 // than a corrupted one (plan VI).
-void ClientSession::backend_response_failed() {
+void ClientSession::backend_response_failed(std::string_view reason) {
     if (!response_flushed_) {
-        fail_request(502, /*backend_fault=*/true);
+        fail_request(502, /*backend_fault=*/true, reason);
         return;
     }
     trace(TraceStep::Aborted);
+    log_event("response_aborted",
+              backend_rt_->id + " failed mid-response (" + std::string(reason) +
+                  "); client connection cut so it sees an incomplete response",
+              {{"reason", reason}});
     end_backend_use(BackendOutcome::Failure);
+    record_outcome(0);
     close_all(true);
 }
 
-void ClientSession::fail_request(int status, bool backend_fault) {
+void ClientSession::fail_request(int status, bool backend_fault, std::string_view reason) {
+    if (backend_fault && backend_rt_) {
+        log_event("backend_error",
+                  backend_rt_->id + " failed: " + std::string(reason) + " -> " + std::to_string(status),
+                  {{"status", status}, {"reason", reason}});
+    } else {
+        metrics_series_ = 0;  // the proxy refused the request; no backend is charged
+    }
     close_backend(false);
     end_backend_use(backend_fault ? BackendOutcome::Failure : BackendOutcome::NotJudged);
     trace(TraceStep::ErrorResponse, status);
@@ -574,6 +615,12 @@ void ClientSession::finish_exchange() {
     if (request_id_ != 0) {
         trace(TraceStep::ResponseCompleted, response_status_);
         ctx_.counters->requests_completed.fetch_add(1, std::memory_order_relaxed);
+        record_outcome(response_status_);
+        if (stale_retried_ && !proxy_error_) {
+            ctx_.counters->stale_retry_successes.fetch_add(1, std::memory_order_relaxed);
+            log_event("retry_result", "resent request succeeded with " + std::to_string(response_status_),
+                      {{"status", response_status_}});
+        }
     }
     if (!keep_alive_ || shutdown_requested_ || ctx_.stopping->load(std::memory_order_relaxed)) {
         close_all(false);
@@ -623,6 +670,12 @@ void ClientSession::reset_for_next_request() {
     proxy_error_ = false;
     request_tag_.clear();
     request_head_seen_ = false;
+    outcome_recorded_ = false;
+    metrics_series_ = 0;
+    backend_ready_at_ = {};
+    backend_done_at_ = {};
+    request_started_ = client_in_.has_data();  // pipelined bytes: the next request has begun
+    if (request_started_) request_start_ = Clock::now();
 
     // Deadlines for the next request: keep-alive idle until its first byte, then the
     // header deadline. Pipelined bytes already buffered start the header deadline now.
@@ -712,39 +765,75 @@ void ClientSession::handle_timeout(Deadline expired) {
                              expired == Deadline::ClientBody || expired == Deadline::ClientWrite;
     (client_side ? ctx_.counters->client_timeouts : ctx_.counters->backend_timeouts)
         .fetch_add(1, std::memory_order_relaxed);
+    const auto client_timeout = [&](const char* name, std::uint32_t ms) {
+        log_event("timeout", std::string(name) + " timeout (" + std::to_string(ms) + " ms) from " + peer_ip_,
+                  {{"timeout", name}, {"peer", peer_ip_}});
+    };
     switch (expired) {
-        case Deadline::ClientHeader:     // slowloris defense
-        case Deadline::ClientKeepAlive:
+        case Deadline::ClientHeader:  // slowloris defense
+            trace(TraceStep::TimedOut, 0);
+            client_timeout("client_header", timeouts_.client_header_ms);
+            close_all(false);
+            break;
+        case Deadline::ClientKeepAlive:  // routine: an idle keep-alive connection is closed, not logged
             trace(TraceStep::TimedOut, 0);
             close_all(false);
             break;
         case Deadline::ClientWrite:  // the client stopped reading
             trace(TraceStep::TimedOut, 0);
+            client_timeout("client_write_idle", timeouts_.client_write_idle_ms);
             close_all(true);
             break;
         case Deadline::ClientBody:
             trace(TraceStep::TimedOut, 408);
+            client_timeout("client_body_idle", timeouts_.client_body_idle_ms);
             fail_request(408, /*backend_fault=*/false);
             break;
         case Deadline::BackendConnect:
             trace(TraceStep::TimedOut, 502);
-            fail_request(502, /*backend_fault=*/true);  // phase 3: retry if eligible
+            fail_request(502, /*backend_fault=*/true,
+                         "connect timeout (" + std::to_string(timeouts_.backend_connect_ms) + " ms)");
             break;
         case Deadline::BackendResponse:
             trace(TraceStep::TimedOut, 504);
-            fail_request(504, /*backend_fault=*/true);
+            fail_request(504, /*backend_fault=*/true,
+                         "no response headers within " + std::to_string(timeouts_.backend_response_ms) + " ms");
             break;
         case Deadline::BackendIdle:
             if (stage_ == Stage::Request) {  // the backend stopped taking the request body
                 trace(TraceStep::TimedOut, 504);
-                fail_request(504, /*backend_fault=*/true);
+                fail_request(504, /*backend_fault=*/true,
+                             "stalled taking the request for " + std::to_string(timeouts_.backend_idle_ms) + " ms");
             } else {  // the backend stalled mid-response: 502, or cut the client off if bytes went out
                 trace(TraceStep::TimedOut, response_flushed_ ? 0 : 502);
-                backend_response_failed();
+                backend_response_failed("stalled mid-response for " + std::to_string(timeouts_.backend_idle_ms) +
+                                        " ms");
             }
             break;
         case Deadline::None:
             break;
+    }
+}
+
+void ClientSession::record_outcome(int status) noexcept {
+    if (outcome_recorded_ || request_id_ == 0 || ctx_.metrics == nullptr) return;
+    outcome_recorded_ = true;
+    const TimePoint now = Clock::now();
+    const Duration total = request_started_ ? now - request_start_ : Duration::zero();
+    std::optional<Duration> backend_time;
+    if (status > 0 && !proxy_error_ && backend_ready_at_ != TimePoint{} && backend_done_at_ >= backend_ready_at_) {
+        backend_time = backend_done_at_ - backend_ready_at_;
+    }
+    ctx_.metrics->record(metrics_series_, now, total, backend_time, metrics::status_class(status));
+}
+
+void ClientSession::log_event(std::string_view type, std::string message, nlohmann::json fields) const noexcept {
+    if (ctx_.events == nullptr) return;
+    try {
+        ctx_.events->emit(type, std::move(message), std::move(fields),
+                          backend_rt_ ? std::string_view(backend_rt_->id) : std::string_view{}, request_tag_);
+    } catch (...) {
+        // Logging must never take a request down.
     }
 }
 
@@ -766,6 +855,7 @@ void ClientSession::close_backend(bool reusable) noexcept {
 }
 
 void ClientSession::close_all(bool abortive) noexcept {
+    if (!closed_ && request_id_ != 0) record_outcome(0);  // closed mid-request: counted as aborted
     closed_ = true;
     disarm_deadline();
     // Queued for a pool slot: withdraw the ticket and wake ourselves so the pending
@@ -790,6 +880,12 @@ void ClientSession::close_all(bool abortive) noexcept {
 void ClientSession::trace(TraceStep step, int status) const noexcept {
     if (TraceSink* sink = ctx_.trace->load(std::memory_order_acquire)) {
         sink->on_trace(TraceEvent{request_id_, step, status});
+    }
+    // Plan IV.18: in debug logging mode every step of every request goes to the event log.
+    if (ctx_.events != nullptr && ctx_.events->trace_requests() && request_id_ != 0) {
+        const std::string name(to_string(step));
+        log_event("request_step", status != 0 ? name + " " + std::to_string(status) : name,
+                  {{"step", name}, {"status", status}});
     }
 }
 

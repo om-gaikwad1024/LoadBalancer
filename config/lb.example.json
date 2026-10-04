@@ -31,6 +31,22 @@
   "maintenance": {
     "interval_ms": 500
   },
+  "metrics": {
+    "slice_ms": 1000,
+    "window_slices": 10
+  },
+  "event_log": {
+    "path": "logs/lb-events.jsonl",
+    "max_file_bytes": 10485760,
+    "max_files": 5,
+    "max_queue": 100000,
+    "recent_events": 500,
+    "trace_requests": false
+  },
+  "dashboard": {
+    "publish_interval_ms": 500,
+    "event_rows": 500
+  },
   "timeouts": {
     "client_header_ms": 10000,
     "client_body_idle_ms": 30000,

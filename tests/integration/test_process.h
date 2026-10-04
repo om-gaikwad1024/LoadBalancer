@@ -62,6 +62,16 @@ public:
         return false;
     }
 
+    DWORD pid() const noexcept { return info_.dwProcessId; }
+
+    // Waits for the process to exit on its own; false on timeout.
+    bool wait_for_exit(std::chrono::milliseconds timeout, DWORD* exit_code) {
+        if (info_.hProcess == nullptr) return false;
+        if (::WaitForSingleObject(info_.hProcess, static_cast<DWORD>(timeout.count())) != WAIT_OBJECT_0) return false;
+        ::GetExitCodeProcess(info_.hProcess, exit_code);
+        return true;
+    }
+
     // Hard kill, like a crashed backend: no graceful shutdown of its sockets.
     void kill() {
         if (info_.hProcess != nullptr) {

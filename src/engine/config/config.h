@@ -33,6 +33,29 @@ struct PoolConfig {
     std::uint32_t wait_timeout_ms = 0;              // queued longer than this: 503
 };
 
+// Latency histograms (plan IV.15): "live" percentiles cover a rolling window of
+// window_slices x slice_ms; "since start" percentiles cover everything.
+struct MetricsConfig {
+    std::uint32_t slice_ms = 0;
+    std::uint32_t window_slices = 0;
+};
+
+// Event log (plan IV.16): JSON lines written by a background thread, size-based rotation.
+struct EventLogConfig {
+    std::string path;                 // empty: in-memory only (recent events), no file
+    std::uint32_t max_file_bytes = 0;  // rotate when the file would grow past this
+    std::uint32_t max_files = 0;       // rotated files kept: path.1 ... path.N
+    std::uint32_t max_queue = 0;       // events waiting for the writer; beyond it events are dropped and counted
+    std::uint32_t recent_events = 0;   // kept in memory for the dashboard
+    bool trace_requests = false;       // debug: log every pipeline step of every request (plan IV.18)
+};
+
+// Operator dashboard (plan IV.17).
+struct DashboardConfig {
+    std::uint32_t publish_interval_ms = 0;  // engine publishes a copied snapshot this often; the UI repaints at the same rate
+    std::uint32_t event_rows = 0;           // rows kept in the live event list
+};
+
 // Maintenance thread (plan V): idle-connection sweeps, later stale sticky/rate-limit entries.
 struct MaintenanceConfig {
     std::uint32_t interval_ms = 0;
@@ -127,6 +150,9 @@ struct ConfigSnapshot {
     BuffersConfig buffers;
     PoolConfig pool;
     MaintenanceConfig maintenance;
+    MetricsConfig metrics;
+    EventLogConfig event_log;
+    DashboardConfig dashboard;
     TimeoutsConfig timeouts;
     std::vector<GroupConfig> groups;
     RoutingConfig routing;

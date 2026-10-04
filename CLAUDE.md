@@ -2,7 +2,7 @@
 
 HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Reference: `docs/plan.md` (section numbers below point into it).
 
-**Current step:** 1.8 done — next: 1.9 (waiting for review/commit)
+**Current step:** 1.10 done — next: 1.11 gate (waiting for review/commit)
 
 ## Rules
 - Read only the `docs/plan.md` sections listed for the current step. Never read the whole plan again, and never re-read the PDF.
@@ -21,7 +21,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 | Path | What |
 |---|---|
 | `src/engine/` | `lb_engine` static lib: core, config, http, net, proxy, backend, balance, health, metrics, log |
-| `src/app/` | `LoadBalancer.exe` MFC dialog app (shell, dashboard, admin) |
+| `src/app/` | `LoadBalancer.exe --config <file>`: MFC dashboard; gets copied `DashboardSnapshot`s via `SnapshotBridge` (PostMessage) |
 | `tests/unit/`, `tests/integration/` | `lb_unit_tests`, `lb_integration_tests` (GoogleTest, labels `unit`/`integration`) |
 | `tests/corpus/`, `tests/fuzz/` | escaped reject corpus `<status>_<name>.txt`; parser fuzz target (`tools\build.cmd fuzz all [seconds]`) |
 | `tools/lb_console/` | `lb_console.exe --config <file>`: headless engine host for load/soak runs |
@@ -43,8 +43,8 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 - [x] 1.6 Forwarding headers, X-Request-Id, all timeouts (IV.6, VI)
 - [x] 1.7 Round robin + least connections (IV.7)
 - [x] 1.8 Active health checks with hysteresis (IV.10)
-- [ ] 1.9 Per-thread latency histograms + JSON-lines event log writer (IV.15, IV.16, V)
-- [ ] 1.10 MFC dashboard, phase 1 (IV.17)
+- [x] 1.9 Per-thread latency histograms + JSON-lines event log writer (IV.15, IV.16, V)
+- [x] 1.10 MFC dashboard, phase 1 (IV.17)
 - [ ] 1.11 Gate: k6 benchmark, backend-kill test, soak with no handle/memory growth (I, IX, X)
 ### Phase 2 — Smart routing and live operations
 - [ ] 2.1 Hot reload: watcher + debounce, validate-then-swap, content hash (IV.14)

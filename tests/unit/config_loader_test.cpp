@@ -25,6 +25,10 @@ json good_config() {
       "pool": { "max_connections_per_backend": 128, "max_idle_per_backend": 32, "idle_timeout_ms": 30000,
                 "max_waiters_per_backend": 500, "wait_timeout_ms": 1000 },
       "maintenance": { "interval_ms": 250 },
+      "metrics": { "slice_ms": 1000, "window_slices": 10 },
+      "dashboard": { "publish_interval_ms": 250, "event_rows": 300 },
+      "event_log": { "path": "logs/events.jsonl", "max_file_bytes": 1048576, "max_files": 3, "max_queue": 1000,
+                     "recent_events": 200, "trace_requests": true },
       "timeouts": { "client_header_ms": 10000, "client_body_idle_ms": 20000, "client_keepalive_idle_ms": 30000,
                     "client_write_idle_ms": 40000, "backend_connect_ms": 3000, "backend_response_ms": 50000,
                     "backend_idle_ms": 60000, "shutdown_grace_ms": 5000 },
@@ -121,6 +125,16 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.pool.max_waiters_per_backend, 500u);
     EXPECT_EQ(c.pool.wait_timeout_ms, 1000u);
     EXPECT_EQ(c.maintenance.interval_ms, 250u);
+    EXPECT_EQ(c.metrics.slice_ms, 1000u);
+    EXPECT_EQ(c.metrics.window_slices, 10u);
+    EXPECT_EQ(c.dashboard.publish_interval_ms, 250u);
+    EXPECT_EQ(c.dashboard.event_rows, 300u);
+    EXPECT_EQ(c.event_log.path, "logs/events.jsonl");
+    EXPECT_EQ(c.event_log.max_file_bytes, 1048576u);
+    EXPECT_EQ(c.event_log.max_files, 3u);
+    EXPECT_EQ(c.event_log.max_queue, 1000u);
+    EXPECT_EQ(c.event_log.recent_events, 200u);
+    EXPECT_TRUE(c.event_log.trace_requests);
     EXPECT_EQ(c.timeouts.client_header_ms, 10000u);
     EXPECT_EQ(c.timeouts.client_body_idle_ms, 20000u);
     EXPECT_EQ(c.timeouts.client_keepalive_idle_ms, 30000u);
@@ -283,6 +297,17 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/pool/max_waiters_per_backend", 1000001, "between 0 and 1000000"},
     BadValueCase{"/pool/wait_timeout_ms", 0, "between 1 and 600000"},
     BadValueCase{"/maintenance/interval_ms", 9, "between 10 and 60000"},
+    BadValueCase{"/metrics/slice_ms", 99, "between 100 and 60000"},
+    BadValueCase{"/dashboard/publish_interval_ms", 49, "between 50 and 10000"},
+    BadValueCase{"/dashboard/event_rows", 9, "between 10 and 100000"},
+    BadValueCase{"/metrics/window_slices", 0, "between 1 and 120"},
+    BadValueCase{"/event_log/path", 5, "expected a string"},
+    BadValueCase{"/event_log/max_file_bytes", 100, "between 4096 and 1073741824"},
+    BadValueCase{"/event_log/max_files", 0, "between 1 and 100"},
+    BadValueCase{"/event_log/max_queue", 99, "between 100 and 10000000"},
+    BadValueCase{"/event_log/recent_events", 100001, "between 0 and 100000"},
+    BadValueCase{"/event_log/trace_requests", "yes", "expected true or false"},
+    BadValueCase{"/event_log/trace_requests", 1, "expected true or false"},
     BadValueCase{"/timeouts/client_header_ms", 0, "between 1 and 600000"},
     BadValueCase{"/timeouts/backend_response_ms", 600001, "between 1 and 600000"},
     BadValueCase{"/groups/0/health/type", "icmp", "must be \"http\" or \"tcp\""},

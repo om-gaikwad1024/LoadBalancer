@@ -73,6 +73,54 @@ are closed at once.
 |---|---|---|---|
 | `maintenance.interval_ms` | integer | 10–60000 | How often the maintenance thread runs: it closes idle pooled connections past `pool.idle_timeout_ms` (later also expired sticky-session and rate-limit entries) |
 
+## `metrics`: latency histograms (plan IV.15)
+Every IOCP worker records into its own log-bucketed histograms, with at most 1.6% relative error
+and fixed memory; reading merges them. The proxy as a whole and each backend get two series:
+**total** (first request byte in to last response byte out) and **backend** (backend connection
+ready to response fully received). Each series is reported as p50/p95/p99/max/mean, both since
+start and over a live window, together with requests per second, the error rate, and counts per
+status class (1xx–5xx, plus aborted).
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `metrics.slice_ms` | integer | 100–60000 | Length of one time slice of the live window |
+| `metrics.window_slices` | integer | 1–120 | Slices in the live window. Window = `slice_ms × window_slices` (default 10 s) |
+
+## `event_log`: audit trail (plan IV.16)
+One JSON object per line. A background thread does the writing (workers only queue), and files
+rotate by size. Every entry has `ts` (UTC wall clock, for people and for correlating with k6),
+`mono_ms` (monotonic ms since start, for ordering), `seq`, `event` and `message`, plus `backend`
+and `request_id` (the X-Request-Id) when they apply.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `event_log.path` | string | file path, or `""` | Log file (its directory is created). `""` keeps events in memory only (for the dashboard), with no file |
+| `event_log.max_file_bytes` | integer | 4096–1073741824 | Rotate before the file would exceed this size |
+| `event_log.max_files` | integer | 1–100 | Rotated files kept: `path.1` (newest) … `path.N` (oldest is deleted) |
+| `event_log.max_queue` | integer | 100–10000000 | Entries waiting for the writer. Past this, new entries are dropped and counted (`events_dropped`) instead of blocking a worker |
+| `event_log.recent_events` | integer | 0–100000 | Newest entries kept in memory for the dashboard's live list |
+| `event_log.trace_requests` | boolean | `true` / `false` | Debug mode: log every pipeline step of every request as `request_step` (plan IV.18). High volume |
+
+Events written: `engine_started`, `engine_stopped`, `backend_marked_unhealthy` (with `reason` and
+`failures`), `backend_marked_healthy` (`successes`), `no_backend_available`, `connection_rejected`
+(over `max_client_connections`), `pool_rejected` (`queue_full` / `wait_timeout`), `backend_error`
+(`status`, `reason`), `response_aborted`, `timeout` (client-side timeouts except keep-alive idle),
+`retry` and `retry_result` (stale pooled connection), and `request_step` in debug mode. Malformed
+requests and keep-alive idle closes are counted but not logged, since they're common and
+client-controlled.
+
+## `dashboard`: operator UI (plan IV.17)
+`LoadBalancer.exe --config <file.json> [--minimized]` hosts the engine and the dashboard. Without
+`--config`, it asks for a file. A rejected config is shown with every error, and nothing starts.
+The engine copies a snapshot on its own publisher thread and hands it to the UI thread as a
+posted message; the UI repaints from that copy on a timer and never reads engine state directly.
+Closing the window shuts the proxy down gracefully (`timeouts.shutdown_grace_ms`).
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `dashboard.publish_interval_ms` | integer | 50–10000 | How often the engine publishes a snapshot; the UI repaints at the same rate |
+| `dashboard.event_rows` | integer | 10–100000 | Rows kept in the live event list (newest first) |
+
 ## `timeouts` (plan VI)
 Every wait has a limit, measured on the monotonic clock, so changing the system clock has no
 effect. "Absolute" means a fixed deadline that more traffic does not extend; "idle" means the

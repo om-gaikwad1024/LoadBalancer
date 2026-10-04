@@ -3,12 +3,19 @@
 
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
-IDD_MAIN DIALOGEX 0, 0, 320, 120
-STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+// Operator dashboard, phase 1 (plan IV.17). Positions are a starting point; the dialog
+// lays its controls out again whenever it is resized.
+IDD_MAIN DIALOGEX 0, 0, 660, 430
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME
 CAPTION "Load Balancer"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    LTEXT           "Engine version:", IDC_STATIC, 10, 10, 120, 10
-    LTEXT           "", IDC_ENGINE_VERSION, 10, 24, 300, 10
-    DEFPUSHBUTTON   "Close", IDCANCEL, 260, 96, 50, 14
+    LTEXT           "Starting...", IDC_STATUS, 7, 7, 646, 10
+    LTEXT           "p99", IDC_P99_LABEL, 7, 21, 220, 20
+    LTEXT           "max", IDC_MAX_LABEL, 233, 21, 220, 20
+    LTEXT           "", IDC_LATENCY_DETAIL, 7, 44, 646, 10
+    LTEXT           "Backends", IDC_BACKENDS_CAPTION, 7, 58, 200, 10
+    CONTROL         "", IDC_BACKENDS, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 7, 70, 646, 140
+    LTEXT           "Events (newest first)", IDC_EVENTS_CAPTION, 7, 216, 200, 10
+    CONTROL         "", IDC_EVENTS, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 7, 228, 646, 195
 END

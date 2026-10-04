@@ -4,6 +4,7 @@ set(CMAKE_MFC_FLAG 2)  # shared MFC DLL (used by Visual Studio generators; Ninja
 add_executable(LoadBalancer WIN32
   framework.h
   resource.h
+  Text.h
   LoadBalancerApp.h
   LoadBalancerApp.cpp
   MainDlg.h

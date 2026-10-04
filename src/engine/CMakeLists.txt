@@ -13,6 +13,13 @@ add_library(lb_engine STATIC
   backend/registry.cpp
   balance/group_balancer.h
   balance/group_balancer.cpp
+  metrics/metrics_types.h
+  metrics/histogram.h
+  metrics/metrics.h
+  metrics/metrics.cpp
+  log/event_types.h
+  log/event_log.h
+  log/event_log.cpp
   health/hysteresis.h
   health/health_checker.h
   health/health_checker.cpp

@@ -36,6 +36,7 @@ void BackendRegistry::load(const ConfigSnapshot& config) {
         std::vector<std::shared_ptr<BackendRuntime>> members;
         for (const auto& b : g.backends) {
             members.push_back(std::make_shared<BackendRuntime>(b, g.name, limits, ops_));
+            members.back()->metrics_series = backends.size() + 1;
             backends.push_back(members.back());
         }
         groups.push_back(std::make_shared<balance::GroupBalancer>(g.name, g.strategy, std::move(members)));

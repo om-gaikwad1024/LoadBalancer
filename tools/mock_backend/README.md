@@ -23,6 +23,7 @@ Set them at startup (`--latency-ms 50`) or while the mock runs (`GET /__mock/set
 | Switch | Default | Effect |
 |---|---|---|
 | `latency_ms` | 0 | Sleep before answering |
+| `latency_rate` | 1 | Share of requests that get `latency_ms` (e.g. `0.02` = a slow 2% tail) |
 | `error_rate` / `error_status` | 0 / 500 | Share of requests answered with `error_status` |
 | `close_rate` | 0 | Share of requests answered by an abrupt close (RST), with no bytes sent |
 | `partial_rate` | 0 | Share answered with the full head and half the promised body, then FIN |

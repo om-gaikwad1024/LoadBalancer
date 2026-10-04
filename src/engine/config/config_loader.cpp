@@ -193,6 +193,16 @@ public:
         return value;
     }
 
+    std::optional<bool> get_bool(const json& obj, const std::string& path, std::string_view key) {
+        const json* v = field(obj, key);
+        if (v == nullptr) return std::nullopt;
+        if (!v->is_boolean()) {
+            error(child(path, key), "expected true or false");
+            return std::nullopt;
+        }
+        return v->get<bool>();
+    }
+
     std::optional<std::string> get_string(const json& obj, const std::string& path, std::string_view key) {
         const json* v = field(obj, key);
         if (v == nullptr) return std::nullopt;
@@ -279,6 +289,44 @@ void build_pool(const json& root, Validator& v, ConfigSnapshot& out) {
     if (p.max_connections_per_backend != 0 && p.max_idle_per_backend > p.max_connections_per_backend) {
         v.error(child(path, "max_idle_per_backend"), "must not exceed max_connections_per_backend");
     }
+}
+
+void build_metrics(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/metrics";
+    const json* j = Validator::field(root, "metrics");
+    if (j == nullptr || !v.check_object(*j, path, {"slice_ms", "window_slices"})) return;
+    if (auto n = v.get_uint(*j, path, "slice_ms", 100, 60'000)) out.metrics.slice_ms = static_cast<std::uint32_t>(*n);
+    if (auto n = v.get_uint(*j, path, "window_slices", 1, 120)) out.metrics.window_slices = static_cast<std::uint32_t>(*n);
+}
+
+void build_event_log(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/event_log";
+    const json* j = Validator::field(root, "event_log");
+    if (j == nullptr || !v.check_object(*j, path,
+                                        {"path", "max_file_bytes", "max_files", "max_queue", "recent_events",
+                                         "trace_requests"})) {
+        return;
+    }
+    EventLogConfig& e = out.event_log;
+    if (auto p = v.get_string(*j, path, "path")) e.path = *p;
+    const auto set = [&](std::string_view key, std::uint64_t min, std::uint64_t max, std::uint32_t& field) {
+        if (auto value = v.get_uint(*j, path, key, min, max)) field = static_cast<std::uint32_t>(*value);
+    };
+    set("max_file_bytes", 4096, 1024ull * 1024 * 1024, e.max_file_bytes);
+    set("max_files", 1, 100, e.max_files);
+    set("max_queue", 100, 10'000'000, e.max_queue);
+    set("recent_events", 0, 100'000, e.recent_events);
+    if (auto b = v.get_bool(*j, path, "trace_requests")) e.trace_requests = *b;
+}
+
+void build_dashboard(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/dashboard";
+    const json* j = Validator::field(root, "dashboard");
+    if (j == nullptr || !v.check_object(*j, path, {"publish_interval_ms", "event_rows"})) return;
+    if (auto n = v.get_uint(*j, path, "publish_interval_ms", 50, 10'000)) {
+        out.dashboard.publish_interval_ms = static_cast<std::uint32_t>(*n);
+    }
+    if (auto n = v.get_uint(*j, path, "event_rows", 10, 100'000)) out.dashboard.event_rows = static_cast<std::uint32_t>(*n);
 }
 
 void build_maintenance(const json& root, Validator& v, ConfigSnapshot& out) {
@@ -546,8 +594,11 @@ ConfigLoadResult parse_config(std::string_view json_text) {
     for (const auto& path : duplicates.duplicates()) v.error(path, "duplicate key");
 
     auto snapshot = std::make_shared<ConfigSnapshot>();
-    if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "pool", "maintenance", "timeouts",
-                                  "trusted_proxies", "groups", "routing"})) {
+    if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "pool", "maintenance", "metrics",
+                                  "event_log", "dashboard", "timeouts", "trusted_proxies", "groups", "routing"})) {
+        build_metrics(root, v, *snapshot);
+        build_dashboard(root, v, *snapshot);
+        build_event_log(root, v, *snapshot);
         build_trusted_proxies(root, v, *snapshot);
         build_listen(root, v, *snapshot);
         build_workers(root, v, *snapshot);

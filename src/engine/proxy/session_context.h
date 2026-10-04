@@ -12,6 +12,8 @@
 #include "backend/registry.h"
 #include "config/config_store.h"
 #include "core/timer_service.h"
+#include "log/event_log.h"
+#include "metrics/metrics.h"
 #include "net/iocp.h"
 #include "net/winsock.h"
 #include "proxy/forwarding.h"
@@ -31,6 +33,7 @@ struct EngineCounters {
     std::atomic<std::uint64_t> backend_connections_opened{0};
     std::atomic<std::uint64_t> backend_connections_reused{0};  // requests sent on a pooled connection
     std::atomic<std::uint64_t> stale_retries{0};  // idempotent requests resent after a dead pooled connection
+    std::atomic<std::uint64_t> stale_retry_successes{0};
     std::atomic<std::uint64_t> pool_rejections{0};  // 503: wait queue full or wait timed out
     std::atomic<std::uint64_t> no_backend_available{0};  // 503: no eligible backend in the group
     std::atomic<std::uint64_t> backends_marked_down{0};  // health checks (plan IV.10)
@@ -68,6 +71,8 @@ struct SessionContext {
     std::atomic<bool>* stopping = nullptr;
     std::atomic<std::uint64_t>* next_request_id = nullptr;
     const RequestIdGenerator* request_ids = nullptr;
+    metrics::Metrics* metrics = nullptr;
+    log::EventLog* events = nullptr;
 };
 
 }  // namespace lb::proxy

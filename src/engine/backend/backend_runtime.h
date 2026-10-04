@@ -36,6 +36,9 @@ public:
 
     ConnectionPool pool;
 
+    // Series number in the latency metrics (1-based; 0 is the whole proxy). Set at load.
+    std::size_t metrics_series = 0;
+
     // Healthy and not draining (circuit-open joins this check in phase 3).
     bool eligible() const noexcept { return state.load(std::memory_order_acquire) == BackendState::Healthy; }
 

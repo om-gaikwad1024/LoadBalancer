@@ -8,6 +8,8 @@
 
 #include "backend/backend_types.h"
 #include "config/config.h"
+#include "log/event_types.h"
+#include "metrics/metrics_types.h"
 #include "proxy/trace.h"
 
 namespace lb {
@@ -29,6 +31,32 @@ struct EngineStats {
     std::uint64_t backends_marked_up = 0;
     std::uint64_t client_timeouts = 0;   // plan VI: header, body, keep-alive idle, write
     std::uint64_t backend_timeouts = 0;  // plan VI: connect, response headers, idle
+    std::uint64_t stale_retry_successes = 0;  // stale retries that got a response
+    std::uint64_t events_dropped = 0;    // event-log entries lost because the writer fell behind
+};
+
+// Everything the dashboard shows, copied on an engine thread (plan IV.17, V). The UI
+// owns it once delivered and never reads engine state directly.
+struct DashboardSnapshot {
+    std::uint64_t sequence = 0;
+    std::string listen_address;
+    std::uint16_t listen_port = 0;
+    std::uint32_t workers = 0;
+    double uptime_seconds = 0;
+    EngineStats stats;
+    std::vector<BackendStats> backends;
+    MetricsSnapshot metrics;
+    std::vector<LoggedEvent> new_events;  // event-log entries added since the previous snapshot
+};
+
+// Receives snapshots on the engine's publisher thread. Implementations must only hand the
+// snapshot over (e.g. PostMessage to a window) and return at once.
+class SnapshotSink {
+public:
+    virtual void on_snapshot(std::unique_ptr<DashboardSnapshot> snapshot) noexcept = 0;
+
+protected:
+    ~SnapshotSink() = default;
 };
 
 class EngineImpl;
@@ -58,12 +86,22 @@ public:
     // Copied per-backend state for the dashboard (plan IV.4, IV.5).
     std::vector<BackendStats> backend_stats() const;
 
+    // Latency percentiles and rates, merged from every worker's histograms (plan IV.15).
+    MetricsSnapshot metrics() const;
+
+    // The newest event-log entries (plan IV.16), oldest first.
+    std::vector<LoggedEvent> recent_events() const;
+
     // Operator/health-check entry point: unhealthy or draining backends stop receiving new
     // requests and their idle pooled connections are closed at once. False if the id is unknown.
     bool set_backend_state(std::string_view backend_id, BackendState state);
 
     // Optional per-step trace (plan IV.18). Set before start(); the sink must outlive the engine run.
     void set_trace_sink(TraceSink* sink) noexcept;
+
+    // Dashboard feed (plan IV.17): with a sink set before start(), a snapshot is published
+    // every dashboard.publish_interval_ms until stop() begins. The sink must outlive stop().
+    void set_snapshot_sink(SnapshotSink* sink) noexcept;
 
 private:
     std::unique_ptr<EngineImpl> impl_;

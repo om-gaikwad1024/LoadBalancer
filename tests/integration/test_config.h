@@ -14,10 +14,10 @@
 
 namespace lbtest {
 
-// A complete, valid proxy config for tests: listener on an ephemeral port, the given
-// backends in group "web". `tweak` edits the JSON before it goes through the real loader.
-inline std::shared_ptr<const lb::ConfigSnapshot> make_proxy_config(
-    const std::vector<std::uint16_t>& backend_ports, const std::function<void(nlohmann::json&)>& tweak = {}) {
+// A complete, valid proxy config for tests as JSON: listener on an ephemeral port, the
+// given backends in group "web". `tweak` edits it.
+inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& backend_ports,
+                                             const std::function<void(nlohmann::json&)>& tweak = {}) {
     nlohmann::json backends = nlohmann::json::array();
     for (std::size_t i = 0; i < backend_ports.size(); ++i) {
         backends.push_back({{"id", "b" + std::to_string(i + 1)},
@@ -44,6 +44,15 @@ inline std::shared_ptr<const lb::ConfigSnapshot> make_proxy_config(
           {"max_waiters_per_backend", 256},
           {"wait_timeout_ms", 2000}}},
         {"maintenance", {{"interval_ms", 50}}},
+        {"metrics", {{"slice_ms", 1000}, {"window_slices", 10}}},
+        {"dashboard", {{"publish_interval_ms", 500}, {"event_rows", 500}}},
+        {"event_log",
+         {{"path", ""},  // in memory only unless a test asks for a file
+          {"max_file_bytes", 1048576},
+          {"max_files", 3},
+          {"max_queue", 100000},
+          {"recent_events", 1000},
+          {"trace_requests", false}}},
         {"timeouts",
          {{"client_header_ms", 10000},
           {"client_body_idle_ms", 10000},
@@ -71,7 +80,13 @@ inline std::shared_ptr<const lb::ConfigSnapshot> make_proxy_config(
         {"routing", {{"default_group", "web"}}},
     };
     if (tweak) tweak(j);
-    auto loaded = lb::parse_config(j.dump());
+    return j;
+}
+
+// The same config through the real loader.
+inline std::shared_ptr<const lb::ConfigSnapshot> make_proxy_config(
+    const std::vector<std::uint16_t>& backend_ports, const std::function<void(nlohmann::json&)>& tweak = {}) {
+    auto loaded = lb::parse_config(make_proxy_config_json(backend_ports, tweak).dump());
     for (const auto& e : loaded.errors) ADD_FAILURE() << "test config rejected: " << lb::to_string(e);
     return loaded.snapshot;
 }

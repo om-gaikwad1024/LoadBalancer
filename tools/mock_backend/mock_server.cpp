@@ -161,6 +161,7 @@ std::string apply_fault_setting(MockFaults& f, std::string_view key, std::string
 
     if (key == "latency_ms") return count(&f.latency_ms, 600'000);
     if (key == "health_latency_ms") return count(&f.health_latency_ms, 600'000);
+    if (key == "latency_rate") return rate(&f.latency_rate);
     if (key == "error_rate") return rate(&f.error_rate);
     if (key == "error_status") return status(&f.error_status);
     if (key == "close_rate") return rate(&f.close_rate);
@@ -181,10 +182,10 @@ std::string apply_fault_setting(MockFaults& f, std::string_view key, std::string
 std::string faults_to_json(const MockFaults& f) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-                  "{\"latency_ms\":%u,\"error_rate\":%g,\"error_status\":%d,\"close_rate\":%g,\"partial_rate\":%g,"
+                  "{\"latency_ms\":%u,\"latency_rate\":%g,\"error_rate\":%g,\"error_status\":%d,\"close_rate\":%g,\"partial_rate\":%g,"
                   "\"echo_headers\":%s,\"echo_body\":%s,\"health_status\":%d,\"health_latency_ms\":%u,"
                   "\"body_bytes\":%u}",
-                  f.latency_ms, f.error_rate, f.error_status, f.close_rate, f.partial_rate,
+                  f.latency_ms, f.latency_rate, f.error_rate, f.error_status, f.close_rate, f.partial_rate,
                   f.echo_headers ? "true" : "false", f.echo_body ? "true" : "false", f.health_status,
                   f.health_latency_ms, f.body_bytes);
     return buf;
@@ -548,7 +549,7 @@ MockServer::Outcome MockServer::handle_request(SOCKET s, std::string_view method
         ++stats_.requests;
     }
 
-    if (f.latency_ms > 0 && !sleep_unless_stopping(f.latency_ms)) return Outcome::Abort;
+    if (f.latency_ms > 0 && draw(n, 3) < f.latency_rate && !sleep_unless_stopping(f.latency_ms)) return Outcome::Abort;
 
     if (draw(n, 0) < f.close_rate) {
         std::lock_guard lock(stats_mutex_);

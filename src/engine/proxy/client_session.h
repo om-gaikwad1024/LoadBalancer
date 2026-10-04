@@ -93,10 +93,14 @@ private:
     void process_backend_input();
     void on_response_head();
     void handle_backend_eof();
-    void backend_response_failed();
+    void backend_response_failed(std::string_view reason);
     // backend_fault: counts as a backend failure (connect error, broken response), as
     // opposed to the proxy refusing the request (parse error, pool rejection).
-    void fail_request(int status, bool backend_fault);
+    void fail_request(int status, bool backend_fault, std::string_view reason = {});
+    // Metrics for a finished request (plan IV.15): status <= 0 means aborted mid-response.
+    void record_outcome(int status) noexcept;
+    // Event log entry for this request (plan IV.16); never throws.
+    void log_event(std::string_view type, std::string message, nlohmann::json fields = nlohmann::json::object()) const noexcept;
     void finish_exchange();
     enum class BackendOutcome : std::uint8_t { Success, Failure, NotJudged };
     // Ends the current request's use of its backend: in-flight count and success/failure.
@@ -182,6 +186,14 @@ private:
     std::uint64_t backend_bytes_received_ = 0;
     bool backend_in_use_ = false;  // in_flight was incremented for backend_rt_
     bool proxy_error_ = false;     // the response is proxy-generated, not the backend's
+
+    // Latency timing (plan IV.15), monotonic.
+    bool request_started_ = false;
+    TimePoint request_start_{};     // first byte of the request
+    TimePoint backend_ready_at_{};  // backend connection ready (connected or reused)
+    TimePoint backend_done_at_{};   // backend response fully received
+    std::size_t metrics_series_ = 0;  // backend series to charge; 0 = whole-proxy only
+    bool outcome_recorded_ = false;
     http::Version client_version_ = http::Version::Http11;
     ClientBodyMode client_mode_ = ClientBodyMode::None;
 };

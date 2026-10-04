@@ -19,6 +19,7 @@ namespace mock {
 // MockServer::set_faults(), or over HTTP with GET /__mock/set?key=value&...
 struct MockFaults {
     std::uint32_t latency_ms = 0;  // sleep before answering
+    double latency_rate = 1.0;     // share of requests that get latency_ms (the rest answer at once)
     double error_rate = 0.0;       // share of requests answered with error_status
     int error_status = 500;
     double close_rate = 0.0;    // share of requests answered by an abrupt close (RST), no bytes sent
