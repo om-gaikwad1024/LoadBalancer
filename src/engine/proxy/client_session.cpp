@@ -428,16 +428,14 @@ void ClientSession::on_request_head() {
     is_head_ = req.method == "HEAD";
     backend_chunked_ = req.framing == http::BodyFraming::Chunked;
 
-    // Step 1.5: the first eligible backend of the default group. The load balancer
-    // (step 1.7) replaces this choice; the eligibility rule stays the same.
-    for (const auto& b : ctx_.backends->group(config_->routing.default_group)) {
-        if (b->eligible()) {
-            backend_rt_ = b;
-            break;
-        }
-    }
+    // Phase 1 routing: every request goes to the default group (content routing: step 2.3).
+    // The group's balancer picks among healthy, non-draining backends (plan IV.7).
+    if (const auto group = ctx_.backends->find_group(config_->routing.default_group)) backend_rt_ = group->pick();
     if (!backend_rt_) {
-        fail_request(503, /*backend_fault=*/false);  // no healthy, non-draining backend
+        // Plan IV.7/VI: no eligible backend is answered at once with 503, never a hang.
+        // Counted here; the event log records it loudly from step 1.9.
+        ctx_.counters->no_backend_available.fetch_add(1, std::memory_order_relaxed);
+        fail_request(503, /*backend_fault=*/false);
         return;
     }
     LB_DEBUG_ASSERT(backend_rt_->eligible(), "a request may only go to a healthy, non-draining backend (IV.4)");

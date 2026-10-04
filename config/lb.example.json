@@ -45,6 +45,7 @@
   "groups": [
     {
       "name": "web",
+      "strategy": "round_robin",
       "host_header": "preserve",
       "backends": [
         { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 1 },

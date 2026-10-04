@@ -24,6 +24,7 @@ struct EngineStats {
     std::uint64_t backend_connections_reused = 0;  // requests sent on a pooled keep-alive connection
     std::uint64_t stale_retries = 0;    // bodiless idempotent requests resent after a dead pooled connection
     std::uint64_t pool_rejections = 0;  // 503 because a backend's pool was full and its wait queue full or timed out
+    std::uint64_t no_backend_available = 0;  // 503 because no backend in the group was eligible
     std::uint64_t client_timeouts = 0;   // plan VI: header, body, keep-alive idle, write
     std::uint64_t backend_timeouts = 0;  // plan VI: connect, response headers, idle
 };

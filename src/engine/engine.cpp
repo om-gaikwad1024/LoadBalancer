@@ -172,6 +172,7 @@ public:
         s.backend_connections_reused = counters_.backend_connections_reused.load();
         s.stale_retries = counters_.stale_retries.load();
         s.pool_rejections = counters_.pool_rejections.load();
+        s.no_backend_available = counters_.no_backend_available.load();
         s.client_timeouts = counters_.client_timeouts.load();
         s.backend_timeouts = counters_.backend_timeouts.load();
         return s;

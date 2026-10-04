@@ -414,13 +414,18 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
     for (std::size_t gi = 0; gi < j->size(); ++gi) {
         const json& gj = (*j)[gi];
         const std::string gpath = child(path, gi);
-        if (!v.check_object(gj, gpath, {"name", "host_header", "backends"})) continue;
+        if (!v.check_object(gj, gpath, {"name", "strategy", "host_header", "backends"})) continue;
 
         GroupConfig group;
         if (auto name = v.get_name(gj, gpath, "name")) {
             const auto [it, inserted] = group_names.emplace(*name, child(gpath, "name"));
             if (!inserted) v.error(child(gpath, "name"), "duplicate group name (first at " + it->second + ")");
             group.name = *name;
+        }
+        if (auto strategy = v.get_string(gj, gpath, "strategy")) {
+            if (*strategy == "round_robin") group.strategy = Strategy::RoundRobin;
+            else if (*strategy == "least_connections") group.strategy = Strategy::LeastConnections;
+            else v.error(child(gpath, "strategy"), "must be \"round_robin\" or \"least_connections\"");
         }
         if (auto mode = v.get_string(gj, gpath, "host_header")) {
             if (*mode == "preserve") group.host_header = HostHeaderMode::Preserve;

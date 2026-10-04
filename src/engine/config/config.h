@@ -60,6 +60,13 @@ struct Ipv4Cidr {
     bool contains(std::uint32_t address) const noexcept { return (address & mask) == network; }
 };
 
+// Load-balancing strategy, selectable per group (plan IV.7). Phase 2 adds weighted round
+// robin, least response time and IP hash.
+enum class Strategy : std::uint8_t {
+    RoundRobin,
+    LeastConnections,  // fewest in-flight requests (plan IV.5 decision)
+};
+
 enum class HostHeaderMode : std::uint8_t {
     Preserve,  // forward the client's Host (default in plan IV.6)
     Backend,   // rewrite Host to the backend's address:port
@@ -93,6 +100,7 @@ struct BackendConfig {
 struct GroupConfig {
     std::string name;
     std::vector<BackendConfig> backends;
+    Strategy strategy = Strategy::RoundRobin;
     HostHeaderMode host_header = HostHeaderMode::Preserve;
 };
 

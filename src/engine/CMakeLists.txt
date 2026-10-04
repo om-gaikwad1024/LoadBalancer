@@ -7,8 +7,12 @@ add_library(lb_engine STATIC
   backend/backend_types.h
   backend/connection_pool.h
   backend/connection_pool.cpp
+  backend/backend_runtime.h
+  backend/backend_runtime.cpp
   backend/registry.h
   backend/registry.cpp
+  balance/group_balancer.h
+  balance/group_balancer.cpp
   config/config.h
   config/config_loader.h
   config/config_loader.cpp

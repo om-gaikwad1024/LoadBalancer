@@ -32,6 +32,7 @@ struct EngineCounters {
     std::atomic<std::uint64_t> backend_connections_reused{0};  // requests sent on a pooled connection
     std::atomic<std::uint64_t> stale_retries{0};  // idempotent requests resent after a dead pooled connection
     std::atomic<std::uint64_t> pool_rejections{0};  // 503: wait queue full or wait timed out
+    std::atomic<std::uint64_t> no_backend_available{0};  // 503: no eligible backend in the group
     std::atomic<std::uint64_t> client_timeouts{0};   // header, body, keep-alive idle, write
     std::atomic<std::uint64_t> backend_timeouts{0};  // connect, response, idle
 };

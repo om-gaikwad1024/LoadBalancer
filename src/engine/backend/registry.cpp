@@ -1,33 +1,8 @@
 #include "backend/registry.h"
 
-#include <ws2tcpip.h>
-
-#include <chrono>
-
-namespace lb {
-
-std::string_view to_string(BackendState state) noexcept {
-    switch (state) {
-        case BackendState::Healthy: return "healthy";
-        case BackendState::Unhealthy: return "unhealthy";
-        case BackendState::Draining: return "draining";
-    }
-    return "unknown";
-}
-
-}  // namespace lb
-
 namespace lb::backend {
 
 namespace {
-
-sockaddr_in to_sockaddr(const BackendConfig& c) {
-    sockaddr_in a{};
-    a.sin_family = AF_INET;
-    a.sin_port = ::htons(c.port);
-    ::inet_pton(AF_INET, c.address.c_str(), &a.sin_addr);  // validated as an IPv4 literal by the loader
-    return a;
-}
 
 class SharedLock {
 public:
@@ -53,53 +28,21 @@ private:
 
 }  // namespace
 
-PoolLimits pool_limits(const PoolConfig& config) noexcept {
-    PoolLimits l;
-    l.max_connections = config.max_connections_per_backend;
-    l.max_idle = config.max_idle_per_backend;
-    l.max_waiters = config.max_waiters_per_backend;
-    l.idle_timeout = std::chrono::milliseconds(config.idle_timeout_ms);
-    return l;
-}
-
-BackendRuntime::BackendRuntime(const BackendConfig& config, std::string group_name, const PoolLimits& limits,
-                               SocketOps& ops)
-    : id(config.id),
-      group(std::move(group_name)),
-      endpoint(config.address + ":" + std::to_string(config.port)),
-      address(to_sockaddr(config)),
-      weight(config.weight),
-      pool(limits, ops) {}
-
-BackendStats BackendRuntime::stats() const {
-    BackendStats s;
-    s.id = id;
-    s.group = group;
-    s.endpoint = endpoint;
-    s.weight = weight.load();
-    s.state = state.load();
-    s.in_flight = in_flight.load();
-    s.requests = requests.load();
-    s.successes = successes.load();
-    s.failures = failures.load();
-    const PoolStats p = pool.stats();
-    s.open_connections = p.open;
-    s.idle_connections = p.idle;
-    s.waiting_requests = p.waiting;
-    s.connections_opened = p.opened;
-    s.connections_reused = p.reused;
-    s.stale_discarded = p.stale_discarded;
-    return s;
-}
-
 void BackendRegistry::load(const ConfigSnapshot& config) {
     const PoolLimits limits = pool_limits(config.pool);
-    std::vector<std::shared_ptr<BackendRuntime>> fresh;
+    std::vector<std::shared_ptr<BackendRuntime>> backends;
+    std::vector<std::shared_ptr<balance::GroupBalancer>> groups;
     for (const auto& g : config.groups) {
-        for (const auto& b : g.backends) fresh.push_back(std::make_shared<BackendRuntime>(b, g.name, limits, ops_));
+        std::vector<std::shared_ptr<BackendRuntime>> members;
+        for (const auto& b : g.backends) {
+            members.push_back(std::make_shared<BackendRuntime>(b, g.name, limits, ops_));
+            backends.push_back(members.back());
+        }
+        groups.push_back(std::make_shared<balance::GroupBalancer>(g.name, g.strategy, std::move(members)));
     }
     ExclusiveLock lock(lock_);
-    backends_ = std::move(fresh);
+    backends_ = std::move(backends);
+    groups_ = std::move(groups);
 }
 
 std::shared_ptr<BackendRuntime> BackendRegistry::find(std::string_view id) const {
@@ -110,13 +53,17 @@ std::shared_ptr<BackendRuntime> BackendRegistry::find(std::string_view id) const
     return nullptr;
 }
 
-std::vector<std::shared_ptr<BackendRuntime>> BackendRegistry::group(std::string_view name) const {
-    std::vector<std::shared_ptr<BackendRuntime>> out;
+std::shared_ptr<balance::GroupBalancer> BackendRegistry::find_group(std::string_view name) const {
     SharedLock lock(lock_);
-    for (const auto& b : backends_) {
-        if (b->group == name) out.push_back(b);
+    for (const auto& g : groups_) {
+        if (g->name == name) return g;
     }
-    return out;
+    return nullptr;
+}
+
+std::vector<std::shared_ptr<BackendRuntime>> BackendRegistry::group(std::string_view name) const {
+    const auto g = find_group(name);
+    return g ? g->members : std::vector<std::shared_ptr<BackendRuntime>>{};
 }
 
 std::vector<std::shared_ptr<BackendRuntime>> BackendRegistry::all() const {

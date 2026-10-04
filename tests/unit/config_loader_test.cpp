@@ -30,10 +30,10 @@ json good_config() {
                     "backend_idle_ms": 60000, "shutdown_grace_ms": 5000 },
       "trusted_proxies": [ "10.0.0.0/8", "192.168.1.7" ],
       "groups": [
-        { "name": "web", "host_header": "preserve", "backends": [
+        { "name": "web", "strategy": "round_robin", "host_header": "preserve", "backends": [
             { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 3 },
             { "id": "web-2", "address": "127.0.0.2", "port": 9002, "weight": 1 } ] },
-        { "name": "api", "host_header": "backend", "backends": [
+        { "name": "api", "strategy": "least_connections", "host_header": "backend", "backends": [
             { "id": "api-1", "address": "10.0.0.5", "port": 7000, "weight": 1 } ] }
       ],
       "routing": { "default_group": "web" }
@@ -122,6 +122,8 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.timeouts.backend_connect_ms, 3000u);
     EXPECT_EQ(c.timeouts.backend_response_ms, 50000u);
     EXPECT_EQ(c.timeouts.backend_idle_ms, 60000u);
+    EXPECT_EQ(c.groups[0].strategy, lb::Strategy::RoundRobin);
+    EXPECT_EQ(c.groups[1].strategy, lb::Strategy::LeastConnections);
     EXPECT_EQ(c.groups[0].host_header, lb::HostHeaderMode::Preserve);
     EXPECT_EQ(c.groups[1].host_header, lb::HostHeaderMode::Backend);
     ASSERT_EQ(c.trusted_proxies.size(), 2u);
@@ -269,6 +271,8 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/maintenance/interval_ms", 9, "between 10 and 60000"},
     BadValueCase{"/timeouts/client_header_ms", 0, "between 1 and 600000"},
     BadValueCase{"/timeouts/backend_response_ms", 600001, "between 1 and 600000"},
+    BadValueCase{"/groups/0/strategy", "random", "must be \"round_robin\" or \"least_connections\""},
+    BadValueCase{"/groups/0/strategy", 2, "expected a string"},
     BadValueCase{"/groups/0/host_header", "rewrite", "must be \"preserve\" or \"backend\""},
     BadValueCase{"/groups/0/host_header", 1, "expected a string"},
     BadValueCase{"/trusted_proxies", "10.0.0.0/8", "expected an array"},

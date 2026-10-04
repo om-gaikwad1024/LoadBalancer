@@ -111,6 +111,7 @@ Forwarding headers the backend receives:
 | Field | Type | Valid range | Meaning |
 |---|---|---|---|
 | `groups[].name` | string | name rules; unique across groups | Group name, used by routing |
+| `groups[].strategy` | string | `"round_robin"` or `"least_connections"` (phase 2 adds weighted round robin, least response time, IP hash) | How a backend is picked within the group (plan IV.7). Only healthy, non-draining backends are candidates; with none, the request gets **503** at once. `round_robin` rotates over the eligible backends, so an excluded backend's share is spread evenly. `least_connections` picks the fewest in-flight requests, with ties broken by rotation |
 | `groups[].host_header` | string | `"preserve"` or `"backend"` | `preserve` forwards the client's `Host` (plan IV.6 default); `backend` rewrites it to the chosen backend's `address:port`. `X-Forwarded-Host` carries the original either way |
 | `groups[].backends` | array | at least one entry | Backends in this group |
 

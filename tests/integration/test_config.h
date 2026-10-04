@@ -54,7 +54,8 @@ inline std::shared_ptr<const lb::ConfigSnapshot> make_proxy_config(
           {"backend_idle_ms", 10000},
           {"shutdown_grace_ms", 5000}}},
         {"trusted_proxies", nlohmann::json::array()},
-        {"groups", {{{"name", "web"}, {"host_header", "preserve"}, {"backends", backends}}}},
+        {"groups",
+         {{{"name", "web"}, {"strategy", "round_robin"}, {"host_header", "preserve"}, {"backends", backends}}}},
         {"routing", {{"default_group", "web"}}},
     };
     if (tweak) tweak(j);
