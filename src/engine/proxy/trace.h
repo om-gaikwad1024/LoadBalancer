@@ -16,6 +16,7 @@ enum class TraceStep : std::uint8_t {
     ResponseCompleted,  // whole response sent to the client
     ErrorResponse,      // proxy-generated error (status set)
     Aborted,            // client connection closed mid-response
+    TimedOut,           // a plan VI timeout expired (status: the error sent, 0 if the connection was just closed)
 };
 
 std::string_view to_string(TraceStep step) noexcept;

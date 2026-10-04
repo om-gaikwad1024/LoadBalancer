@@ -69,20 +69,45 @@ ClientBodyMode choose_client_body_mode(const http::ResponseHead& response, http:
     return ClientBodyMode::UntilClose;
 }
 
-void append_backend_request_head(std::string& out, const http::RequestHead& request, std::string_view fallback_host) {
+void append_backend_request_head(std::string& out, const http::RequestHead& request, const ForwardingContext& fwd) {
     out.append(request.method);
     out.push_back(' ');
     out.append(request.target);
     out.append(" HTTP/1.1\r\n");
 
     const auto options = connection_options(request.fields);
-    bool has_host = false;
+    const std::string* client_host = request.fields.find("Host");
+    std::string forwarded_for;
+    bool upstream_proto = false;
+    bool upstream_host = false;
     for (const auto& f : request.fields.all()) {
         if (is_hop_by_hop(f.name) || named_in(options, f.name) || iequals(f.name, "Expect")) continue;
-        has_host = has_host || iequals(f.name, "Host");
+        if (iequals(f.name, "X-Forwarded-For")) {  // merged below, never replaced
+            if (!forwarded_for.empty()) forwarded_for.append(", ");
+            forwarded_for.append(f.value);
+            continue;
+        }
+        if (iequals(f.name, "X-Request-Id")) continue;  // re-added with the chosen id
+        if (iequals(f.name, "X-Forwarded-Proto") || iequals(f.name, "X-Forwarded-Host")) {
+            // Client-supplied values are untrusted and dropped (plan VII); a trusted proxy's are kept.
+            if (!fwd.peer_trusted) continue;
+            upstream_proto = upstream_proto || iequals(f.name, "X-Forwarded-Proto");
+            upstream_host = upstream_host || iequals(f.name, "X-Forwarded-Host");
+        }
+        if (iequals(f.name, "Host")) {
+            append_field(out, f.name, fwd.host_mode == HostHeaderMode::Backend ? fwd.backend_endpoint : f.value);
+            continue;
+        }
         append_field(out, f.name, f.value);
     }
-    if (!has_host) append_field(out, "Host", fallback_host);  // HTTP/1.0 client without Host
+    if (client_host == nullptr) append_field(out, "Host", fwd.backend_endpoint);  // HTTP/1.0 client without Host
+
+    if (!forwarded_for.empty()) forwarded_for.append(", ");
+    forwarded_for.append(fwd.client_ip);
+    append_field(out, "X-Forwarded-For", forwarded_for);
+    if (!upstream_proto) append_field(out, "X-Forwarded-Proto", fwd.proto);
+    if (!upstream_host && client_host != nullptr) append_field(out, "X-Forwarded-Host", *client_host);
+    append_field(out, "X-Request-Id", fwd.request_id);
 
     if (request.framing == http::BodyFraming::Chunked) {
         append_field(out, "Transfer-Encoding", "chunked");
@@ -95,7 +120,7 @@ void append_backend_request_head(std::string& out, const http::RequestHead& requ
 }
 
 void append_client_response_head(std::string& out, const http::ResponseHead& response, ClientBodyMode mode,
-                                 bool keep_alive, http::Version client_version) {
+                                 bool keep_alive, http::Version client_version, std::string_view request_id) {
     out.append("HTTP/1.1 ");
     out.append(std::to_string(response.status));
     out.push_back(' ');
@@ -109,9 +134,10 @@ void append_client_response_head(std::string& out, const http::ResponseHead& res
             append_field(out, f.name, f.value);
             continue;
         }
-        if (is_hop_by_hop(f.name) || named_in(options, f.name)) continue;
+        if (is_hop_by_hop(f.name) || named_in(options, f.name) || iequals(f.name, "X-Request-Id")) continue;
         append_field(out, f.name, f.value);
     }
+    if (!request_id.empty()) append_field(out, "X-Request-Id", request_id);
 
     if (mode == ClientBodyMode::ContentLength) {
         append_field(out, "Content-Length", std::to_string(response.content_length));
@@ -137,12 +163,14 @@ void append_chunk(std::string& out, std::string_view data) {
 
 void append_last_chunk(std::string& out) { out.append("0\r\n\r\n"); }
 
-std::string error_response(int status) {
+std::string error_response(int status, std::string_view request_id) {
     const std::string_view reason = reason_phrase(status);
     std::string body(reason);
     body.push_back('\n');
     std::string out = "HTTP/1.1 " + std::to_string(status) + " " + std::string(reason) + "\r\n";
-    out += "Content-Type: text/plain\r\nContent-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n";
+    out += "Content-Type: text/plain\r\nContent-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n";
+    if (!request_id.empty()) out += "X-Request-Id: " + std::string(request_id) + "\r\n";
+    out += "\r\n";
     out += body;
     return out;
 }

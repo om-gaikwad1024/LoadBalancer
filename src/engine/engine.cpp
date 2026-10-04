@@ -74,6 +74,7 @@ public:
         ctx_.trace = &trace_;
         ctx_.stopping = &stopping_;
         ctx_.next_request_id = &next_request_id_;
+        ctx_.request_ids = &request_ids_;
     }
 
     ~EngineImpl() { stop(); }
@@ -171,6 +172,8 @@ public:
         s.backend_connections_reused = counters_.backend_connections_reused.load();
         s.stale_retries = counters_.stale_retries.load();
         s.pool_rejections = counters_.pool_rejections.load();
+        s.client_timeouts = counters_.client_timeouts.load();
+        s.backend_timeouts = counters_.backend_timeouts.load();
         return s;
     }
 
@@ -202,6 +205,7 @@ private:
     std::atomic<TraceSink*> trace_{nullptr};
     std::atomic<bool> stopping_{false};
     std::atomic<std::uint64_t> next_request_id_{0};
+    proxy::RequestIdGenerator request_ids_;
     bool started_ = false;
     bool stopped_ = false;
 };

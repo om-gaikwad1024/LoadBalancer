@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "http/http_message.h"
+#include "proxy/forwarding.h"
 
 namespace lb::proxy {
 
@@ -21,18 +22,21 @@ ClientBodyMode choose_client_body_mode(const http::ResponseHead& response, http:
 // Hop-by-hop fields (RFC 9110 7.6.1) plus framing fields, which the proxy always rewrites.
 bool is_hop_by_hop(std::string_view name) noexcept;
 
-// Request head for the backend: hop-by-hop fields, fields named in Connection, framing
-// fields and Expect removed; framing re-added to match `request.framing`.
-void append_backend_request_head(std::string& out, const http::RequestHead& request, std::string_view fallback_host);
+// Request head for the backend (plan IV.6): hop-by-hop fields, fields named in Connection,
+// framing fields and Expect removed; framing re-added to match `request.framing`;
+// X-Forwarded-For appended to; X-Forwarded-Proto/-Host and X-Request-Id set (a trusted
+// upstream's values kept); Host preserved or rewritten per group.
+void append_backend_request_head(std::string& out, const http::RequestHead& request, const ForwardingContext& fwd);
 
+// request_id: added as X-Request-Id (replacing any the backend sent), so a client can quote it.
 void append_client_response_head(std::string& out, const http::ResponseHead& response, ClientBodyMode mode,
-                                 bool keep_alive, http::Version client_version);
+                                 bool keep_alive, http::Version client_version, std::string_view request_id);
 
 void append_chunk(std::string& out, std::string_view data);
 void append_last_chunk(std::string& out);
 
-// Complete proxy-generated response with Connection: close.
-std::string error_response(int status);
+// Complete proxy-generated response with Connection: close (and X-Request-Id when known).
+std::string error_response(int status, std::string_view request_id = {});
 
 std::string_view reason_phrase(int status) noexcept;
 

@@ -23,6 +23,13 @@ const GroupConfig* ConfigSnapshot::find_group(std::string_view name) const noexc
     return nullptr;
 }
 
+bool ConfigSnapshot::is_trusted_proxy(std::uint32_t address_host_order) const noexcept {
+    for (const auto& c : trusted_proxies) {
+        if (c.contains(address_host_order)) return true;
+    }
+    return false;
+}
+
 std::string to_string(const ConfigError& error) {
     return (error.path.empty() ? std::string("(root)") : error.path) + ": " + error.message;
 }
@@ -282,9 +289,66 @@ void build_maintenance(const json& root, Validator& v, ConfigSnapshot& out) {
 void build_timeouts(const json& root, Validator& v, ConfigSnapshot& out) {
     const std::string path = "/timeouts";
     const json* j = Validator::field(root, "timeouts");
-    if (j == nullptr || !v.check_object(*j, path, {"shutdown_grace_ms"})) return;
-    if (auto n = v.get_uint(*j, path, "shutdown_grace_ms", 0, kMaxTimeoutMs)) {
-        out.timeouts.shutdown_grace_ms = static_cast<std::uint32_t>(*n);
+    if (j == nullptr ||
+        !v.check_object(*j, path,
+                        {"client_header_ms", "client_body_idle_ms", "client_keepalive_idle_ms", "client_write_idle_ms",
+                         "backend_connect_ms", "backend_response_ms", "backend_idle_ms", "shutdown_grace_ms"})) {
+        return;
+    }
+    TimeoutsConfig& t = out.timeouts;
+    const auto set = [&](std::string_view key, std::uint64_t min, std::uint32_t& field) {
+        if (auto value = v.get_uint(*j, path, key, min, kMaxTimeoutMs)) field = static_cast<std::uint32_t>(*value);
+    };
+    set("client_header_ms", 1, t.client_header_ms);
+    set("client_body_idle_ms", 1, t.client_body_idle_ms);
+    set("client_keepalive_idle_ms", 1, t.client_keepalive_idle_ms);
+    set("client_write_idle_ms", 1, t.client_write_idle_ms);
+    set("backend_connect_ms", 1, t.backend_connect_ms);
+    set("backend_response_ms", 1, t.backend_response_ms);
+    set("backend_idle_ms", 1, t.backend_idle_ms);
+    set("shutdown_grace_ms", 0, t.shutdown_grace_ms);
+}
+
+// "a.b.c.d/n" or a single address ("a.b.c.d" = /32). Host bits beyond the prefix are an error,
+// since they usually mean a typo.
+std::optional<Ipv4Cidr> parse_cidr(std::string_view text) {
+    const auto slash = text.find('/');
+    const std::string address(text.substr(0, slash));
+    in_addr addr{};
+    if (::inet_pton(AF_INET, address.c_str(), &addr) != 1) return std::nullopt;
+    unsigned prefix = 32;
+    if (slash != std::string_view::npos) {
+        const std::string_view p = text.substr(slash + 1);
+        if (p.empty() || p.size() > 2 || !std::all_of(p.begin(), p.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+            return std::nullopt;
+        }
+        prefix = static_cast<unsigned>(std::stoul(std::string(p)));
+        if (prefix > 32) return std::nullopt;
+    }
+    Ipv4Cidr c;
+    c.mask = prefix == 0 ? 0 : (0xFFFFFFFFu << (32 - prefix));
+    const std::uint32_t host = ::ntohl(addr.s_addr);
+    if ((host & ~c.mask) != 0) return std::nullopt;
+    c.network = host;
+    return c;
+}
+
+void build_trusted_proxies(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/trusted_proxies";
+    const json* j = Validator::field(root, "trusted_proxies");
+    if (j == nullptr) return;
+    if (!j->is_array()) {
+        v.error(path, "expected an array of IPv4 CIDR strings (may be empty)");
+        return;
+    }
+    for (std::size_t i = 0; i < j->size(); ++i) {
+        const json& e = (*j)[i];
+        const auto parsed = e.is_string() ? parse_cidr(e.get<std::string>()) : std::nullopt;
+        if (!parsed) {
+            v.error(child(path, i), "must be an IPv4 address or CIDR such as 10.0.0.0/8, without host bits");
+            continue;
+        }
+        out.trusted_proxies.push_back(*parsed);
     }
 }
 
@@ -350,13 +414,18 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
     for (std::size_t gi = 0; gi < j->size(); ++gi) {
         const json& gj = (*j)[gi];
         const std::string gpath = child(path, gi);
-        if (!v.check_object(gj, gpath, {"name", "backends"})) continue;
+        if (!v.check_object(gj, gpath, {"name", "host_header", "backends"})) continue;
 
         GroupConfig group;
         if (auto name = v.get_name(gj, gpath, "name")) {
             const auto [it, inserted] = group_names.emplace(*name, child(gpath, "name"));
             if (!inserted) v.error(child(gpath, "name"), "duplicate group name (first at " + it->second + ")");
             group.name = *name;
+        }
+        if (auto mode = v.get_string(gj, gpath, "host_header")) {
+            if (*mode == "preserve") group.host_header = HostHeaderMode::Preserve;
+            else if (*mode == "backend") group.host_header = HostHeaderMode::Backend;
+            else v.error(child(gpath, "host_header"), "must be \"preserve\" or \"backend\"");
         }
 
         const json* bj = Validator::field(gj, "backends");
@@ -432,8 +501,9 @@ ConfigLoadResult parse_config(std::string_view json_text) {
     for (const auto& path : duplicates.duplicates()) v.error(path, "duplicate key");
 
     auto snapshot = std::make_shared<ConfigSnapshot>();
-    if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "pool", "maintenance", "timeouts", "groups",
-                                  "routing"})) {
+    if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "pool", "maintenance", "timeouts",
+                                  "trusted_proxies", "groups", "routing"})) {
+        build_trusted_proxies(root, v, *snapshot);
         build_listen(root, v, *snapshot);
         build_workers(root, v, *snapshot);
         build_limits(root, v, *snapshot);

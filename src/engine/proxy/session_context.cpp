@@ -14,6 +14,7 @@ std::string_view to_string(TraceStep step) noexcept {
         case TraceStep::ResponseCompleted: return "response_completed";
         case TraceStep::ErrorResponse: return "error_response";
         case TraceStep::Aborted: return "aborted";
+        case TraceStep::TimedOut: return "timed_out";
     }
     return "unknown";
 }

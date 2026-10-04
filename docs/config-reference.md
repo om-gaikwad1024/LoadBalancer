@@ -74,11 +74,36 @@ are closed at once.
 | `maintenance.interval_ms` | integer | 10–60000 | How often the maintenance thread runs: it closes idle pooled connections past `pool.idle_timeout_ms` (later also expired sticky-session and rate-limit entries) |
 
 ## `timeouts` (plan VI)
-Every interval is measured on the monotonic clock. Step 1.6 adds the rest of the plan VI timeouts table.
+Every wait has a limit, measured on the monotonic clock, so changing the system clock has no
+effect. "Absolute" means a fixed deadline that more traffic does not extend; "idle" means the
+deadline moves forward each time bytes move. The plan VI pooled-idle timeout is
+`pool.idle_timeout_ms`, and the drain timeout arrives in step 2.6.
 
+| Field | Type | Valid range | Kind | Applies to | On expiry |
+|---|---|---|---|---|---|
+| `timeouts.client_header_ms` | integer | 1–600000 | absolute | The whole request head. For a connection's first request it counts from the accept; for later requests, from their first byte | Close the connection, no response (slowloris defense) |
+| `timeouts.client_body_idle_ms` | integer | 1–600000 | idle | Gaps while the client sends the request body | **408**, close |
+| `timeouts.client_keepalive_idle_ms` | integer | 1–600000 | absolute | An idle client connection between requests, until the next request's first byte | Close the connection |
+| `timeouts.client_write_idle_ms` | integer | 1–600000 | idle | A client that stops reading the response | Close the connection (RST) |
+| `timeouts.backend_connect_ms` | integer | 1–600000 | absolute | Opening a new backend connection | Backend failure; **502** (phase 3: retry if eligible) |
+| `timeouts.backend_response_ms` | integer | 1–600000 | absolute | From the request being fully sent until the response headers arrive | Backend failure; **504** |
+| `timeouts.backend_idle_ms` | integer | 1–600000 | idle | A backend that stalls while taking the request body or sending the response body | Backend failure: **504** while sending the request, **502** before any response byte reached the client; otherwise the client connection is cut so it sees an incomplete response |
+| `timeouts.shutdown_grace_ms` | integer | 0–600000 | absolute | On shutdown the proxy stops accepting and closes idle keep-alive connections at once. In-flight requests get this long to finish (their responses carry `Connection: close`) | Remaining connections are closed |
+
+`client_write_idle_ms` and `backend_idle_ms` aren't rows in the plan VI table, but follow from
+its rule that every wait has a limit.
+
+## `trusted_proxies` (plan IV.6, VII)
 | Field | Type | Valid range | Meaning |
 |---|---|---|---|
-| `timeouts.shutdown_grace_ms` | integer | 0–600000 | On shutdown: the proxy stops accepting and closes idle keep-alive connections at once. In-flight requests get this long to finish (their responses carry `Connection: close`), then the remaining connections are closed |
+| `trusted_proxies` | array of strings | IPv4 addresses or CIDRs (`10.0.0.0/8`, `192.168.1.7`); no host bits beyond the prefix; may be empty | Upstream proxies whose forwarding headers are believed. Only when the TCP peer is in this list are a client's `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Request-Id` kept, and does `X-Forwarded-For` decide the client's identity (the rate limiter in step 3.3). From anyone else these headers are untrusted |
+
+Forwarding headers the backend receives:
+- `X-Forwarded-For`: the client's values, merged into one field, with the TCP peer address appended. It is never replaced.
+- `X-Forwarded-Proto`: `http` (`https` on TLS listeners in phase 4), unless a trusted proxy sent one.
+- `X-Forwarded-Host`: the client's `Host`, unless a trusted proxy sent one.
+- `X-Request-Id`: 32 hex characters, unique per request; a trusted proxy's well-formed id is kept. The same id is returned to the client in its response, including on proxy-generated errors.
+- Hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Upgrade`, plus anything named in `Connection`) and `Expect` are removed, and the body is re-framed.
 
 ## `groups`: backend groups (plan IV.4, IV.7)
 `groups` is a non-empty array. Each group:
@@ -86,6 +111,7 @@ Every interval is measured on the monotonic clock. Step 1.6 adds the rest of the
 | Field | Type | Valid range | Meaning |
 |---|---|---|---|
 | `groups[].name` | string | name rules; unique across groups | Group name, used by routing |
+| `groups[].host_header` | string | `"preserve"` or `"backend"` | `preserve` forwards the client's `Host` (plan IV.6 default); `backend` rewrites it to the chosen backend's `address:port`. `X-Forwarded-Host` carries the original either way |
 | `groups[].backends` | array | at least one entry | Backends in this group |
 
 Each backend:

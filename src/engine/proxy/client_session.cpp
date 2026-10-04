@@ -34,6 +34,13 @@ ClientSession::ClientSession(SessionContext& ctx, SOCKET client, const sockaddr_
     const auto config = ctx_.config->current();
     client_read_size_ = config->buffers.client_read_bytes;
     backend_read_size_ = config->buffers.backend_read_bytes;
+    timeouts_ = config->timeouts;
+    peer_address_ = ::ntohl(peer.sin_addr.s_addr);
+    peer_ip_ = format_ipv4(peer_address_);
+    // The first request's head must arrive within client_header_ms of the accept, so a
+    // connection that sends nothing is closed too (slowloris).
+    head_deadline_ = Clock::now() + std::chrono::milliseconds(timeouts_.client_header_ms);
+    head_deadline_set_ = true;
     ctx_.counters->connections_active.fetch_add(1, std::memory_order_relaxed);
 
     if (reject) {
@@ -85,7 +92,12 @@ void ClientSession::on_io_complete(net::IoOp* /*op*/, DWORD bytes, DWORD error) 
         return;
     }
     try {
-        complete(kind, bytes, error);
+        if (expired_ != Deadline::None) {
+            // The timer cancelled this I/O; whatever it carried is discarded.
+            handle_timeout(std::exchange(expired_, Deadline::None));
+        } else {
+            complete(kind, bytes, error);
+        }
         advance();
     } catch (...) {
         close_all(true);  // allocation failure: drop this connection, never the process
@@ -116,6 +128,7 @@ void ClientSession::advance() {
             }
             if (request_done_) {
                 trace(TraceStep::RequestForwarded);
+                response_deadline_ = Clock::now() + std::chrono::milliseconds(timeouts_.backend_response_ms);
                 stage_ = Stage::Response;
                 response_parser_.reset_for_response(is_head_);
                 continue;
@@ -159,8 +172,15 @@ void ClientSession::complete(Pending kind, DWORD bytes, DWORD error) {
         case Pending::None:
             break;
         case Pending::ClientRecv:
-            if (error != 0 || bytes == 0) client_eof_ = true;
-            else client_in_.commit(bytes);
+            if (error != 0 || bytes == 0) {
+                client_eof_ = true;
+            } else {
+                client_in_.commit(bytes);
+                if (!head_deadline_set_) {  // first byte of a request on a kept-alive connection
+                    head_deadline_ = Clock::now() + std::chrono::milliseconds(timeouts_.client_header_ms);
+                    head_deadline_set_ = true;
+                }
+            }
             break;
         case Pending::ClientSend:
             if (error != 0) {
@@ -212,6 +232,7 @@ void ClientSession::complete(Pending kind, DWORD bytes, DWORD error) {
 }
 
 bool ClientSession::begin_io(Pending kind, SOCKET s) {
+    update_deadline(kind);
     op_.prepare(this, s);
     pending_ = kind;
     pending_self_ = shared_from_this();
@@ -398,6 +419,10 @@ void ClientSession::on_request_head() {
     trace(TraceStep::RequestReceived);
 
     config_ = ctx_.config->current();
+    timeouts_ = config_->timeouts;
+    request_head_seen_ = true;
+    const bool peer_trusted = config_->is_trusted_proxy(peer_address_);
+    request_tag_ = choose_request_id(req.fields, peer_trusted, ctx_.request_ids->make(request_id_));
     client_version_ = req.version;
     request_keep_alive_ = req.keep_alive;
     is_head_ = req.method == "HEAD";
@@ -427,7 +452,16 @@ void ClientSession::on_request_head() {
         req.fields.has_token("Expect", "100-continue")) {
         client_out_ = "HTTP/1.1 100 Continue\r\n\r\n";
     }
-    append_backend_request_head(backend_out_, req, backend_rt_->endpoint);
+
+    ForwardingContext fwd;
+    fwd.client_ip = peer_ip_;
+    fwd.peer_trusted = peer_trusted;
+    fwd.proto = "http";  // phase 4: "https" on TLS listeners
+    fwd.request_id = request_tag_;
+    const GroupConfig* group = config_->find_group(backend_rt_->group);
+    fwd.host_mode = group != nullptr ? group->host_header : HostHeaderMode::Preserve;
+    fwd.backend_endpoint = backend_rt_->endpoint;
+    append_backend_request_head(backend_out_, req, fwd);
 
     const bool idempotent = req.method == "GET" || req.method == "HEAD" || req.method == "OPTIONS";
     const bool bodiless = req.framing == http::BodyFraming::None ||
@@ -477,7 +511,7 @@ void ClientSession::on_response_head() {
     client_mode_ = choose_client_body_mode(resp, client_version_);
     keep_alive_ = request_keep_alive_ && client_mode_ != ClientBodyMode::UntilClose && !shutdown_requested_ &&
                   !ctx_.stopping->load(std::memory_order_relaxed);
-    append_client_response_head(client_out_, resp, client_mode_, keep_alive_, client_version_);
+    append_client_response_head(client_out_, resp, client_mode_, keep_alive_, client_version_, request_tag_);
     response_started_ = true;
 }
 
@@ -512,7 +546,7 @@ void ClientSession::fail_request(int status, bool backend_fault) {
     end_backend_use(backend_fault ? BackendOutcome::Failure : BackendOutcome::NotJudged);
     trace(TraceStep::ErrorResponse, status);
     ctx_.counters->error_responses.fetch_add(1, std::memory_order_relaxed);
-    client_out_ = error_response(status);
+    client_out_ = error_response(status, request_tag_);
     client_out_sent_ = 0;
     backend_out_.clear();
     backend_out_sent_ = 0;
@@ -589,6 +623,131 @@ void ClientSession::reset_for_next_request() {
     backend_bytes_received_ = 0;
     backend_in_use_ = false;
     proxy_error_ = false;
+    request_tag_.clear();
+    request_head_seen_ = false;
+
+    // Deadlines for the next request: keep-alive idle until its first byte, then the
+    // header deadline. Pipelined bytes already buffered start the header deadline now.
+    first_request_ = false;
+    idle_since_ = Clock::now();
+    head_deadline_set_ = client_in_.has_data();
+    if (head_deadline_set_) head_deadline_ = idle_since_ + std::chrono::milliseconds(timeouts_.client_header_ms);
+}
+
+ClientSession::Deadline ClientSession::desired_deadline(Pending kind, TimePoint* at) const {
+    const auto now = Clock::now();
+    const auto ms = [](std::uint32_t v) { return std::chrono::milliseconds(v); };
+    switch (kind) {
+        case Pending::ClientRecv:
+            if (request_head_seen_) {
+                *at = now + ms(timeouts_.client_body_idle_ms);
+                return Deadline::ClientBody;
+            }
+            if (!first_request_ && !head_deadline_set_) {
+                *at = idle_since_ + ms(timeouts_.client_keepalive_idle_ms);
+                return Deadline::ClientKeepAlive;
+            }
+            *at = head_deadline_;
+            return Deadline::ClientHeader;
+        case Pending::ClientSend:
+            *at = now + ms(timeouts_.client_write_idle_ms);
+            return Deadline::ClientWrite;
+        case Pending::BackendConnect:
+            *at = now + ms(timeouts_.backend_connect_ms);
+            return Deadline::BackendConnect;
+        case Pending::BackendSend:
+            *at = now + ms(timeouts_.backend_idle_ms);
+            return Deadline::BackendIdle;
+        case Pending::BackendRecv:
+            if (!response_started_) {
+                *at = response_deadline_;
+                return Deadline::BackendResponse;
+            }
+            *at = now + ms(timeouts_.backend_idle_ms);
+            return Deadline::BackendIdle;
+        case Pending::None:
+        case Pending::PoolWait:  // the pool's wait queue has its own timeout
+            break;
+    }
+    return Deadline::None;
+}
+
+// Called before every I/O: keeps the matching deadline armed. Absolute deadlines stay put
+// across reads; idle deadlines move forward with each I/O.
+void ClientSession::update_deadline(Pending kind) {
+    TimePoint at{};
+    const Deadline wanted = desired_deadline(kind, &at);
+    if (wanted == armed_ && (wanted == Deadline::None || at == armed_at_)) return;
+    disarm_deadline();
+    if (wanted == Deadline::None) return;
+    armed_ = wanted;
+    armed_at_ = at;
+    const std::uint64_t generation = ++deadline_generation_;
+    deadline_timer_ = ctx_.timers->schedule(at, [weak = weak_from_this(), generation] {
+        if (auto self = weak.lock()) self->on_deadline(generation);
+    });
+}
+
+void ClientSession::disarm_deadline() noexcept {
+    if (deadline_timer_ != 0) ctx_.timers->cancel(deadline_timer_);
+    deadline_timer_ = 0;
+    armed_ = Deadline::None;
+    ++deadline_generation_;  // a callback already running for the old deadline does nothing
+}
+
+// Timer thread: never touches request state beyond flagging the expiry; cancelling the
+// pending I/O makes its completion arrive on an IOCP worker, which applies the outcome.
+void ClientSession::on_deadline(std::uint64_t generation) noexcept {
+    std::lock_guard lock(mutex_);
+    if (closed_ || generation != deadline_generation_ || armed_ == Deadline::None) return;
+    expired_ = armed_;
+    armed_ = Deadline::None;
+    deadline_timer_ = 0;
+    if (pending_ != Pending::None && pending_ != Pending::PoolWait && op_.socket != INVALID_SOCKET) {
+        ::CancelIoEx(reinterpret_cast<HANDLE>(op_.socket), &op_.overlapped);
+    }
+}
+
+// Plan VI "On expiry" column.
+void ClientSession::handle_timeout(Deadline expired) {
+    const bool client_side = expired == Deadline::ClientHeader || expired == Deadline::ClientKeepAlive ||
+                             expired == Deadline::ClientBody || expired == Deadline::ClientWrite;
+    (client_side ? ctx_.counters->client_timeouts : ctx_.counters->backend_timeouts)
+        .fetch_add(1, std::memory_order_relaxed);
+    switch (expired) {
+        case Deadline::ClientHeader:     // slowloris defense
+        case Deadline::ClientKeepAlive:
+            trace(TraceStep::TimedOut, 0);
+            close_all(false);
+            break;
+        case Deadline::ClientWrite:  // the client stopped reading
+            trace(TraceStep::TimedOut, 0);
+            close_all(true);
+            break;
+        case Deadline::ClientBody:
+            trace(TraceStep::TimedOut, 408);
+            fail_request(408, /*backend_fault=*/false);
+            break;
+        case Deadline::BackendConnect:
+            trace(TraceStep::TimedOut, 502);
+            fail_request(502, /*backend_fault=*/true);  // phase 3: retry if eligible
+            break;
+        case Deadline::BackendResponse:
+            trace(TraceStep::TimedOut, 504);
+            fail_request(504, /*backend_fault=*/true);
+            break;
+        case Deadline::BackendIdle:
+            if (stage_ == Stage::Request) {  // the backend stopped taking the request body
+                trace(TraceStep::TimedOut, 504);
+                fail_request(504, /*backend_fault=*/true);
+            } else {  // the backend stalled mid-response: 502, or cut the client off if bytes went out
+                trace(TraceStep::TimedOut, response_flushed_ ? 0 : 502);
+                backend_response_failed();
+            }
+            break;
+        case Deadline::None:
+            break;
+    }
 }
 
 void ClientSession::close_backend(bool reusable) noexcept {
@@ -610,6 +769,7 @@ void ClientSession::close_backend(bool reusable) noexcept {
 
 void ClientSession::close_all(bool abortive) noexcept {
     closed_ = true;
+    disarm_deadline();
     // Queued for a pool slot: withdraw the ticket and wake ourselves so the pending
     // reference is released through the normal completion path.
     if (pending_ == Pending::PoolWait && ticket_ && backend_rt_) {

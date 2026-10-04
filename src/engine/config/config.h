@@ -38,9 +38,31 @@ struct MaintenanceConfig {
     std::uint32_t interval_ms = 0;
 };
 
+// Plan VI timeouts table, plus the two waits it implies ("every wait has a limit"):
+// a client that stops reading and a backend that stalls mid-transfer. All monotonic.
 struct TimeoutsConfig {
+    std::uint32_t client_header_ms = 0;          // whole request head (slowloris): close
+    std::uint32_t client_body_idle_ms = 0;       // gap between request body reads: 408, close
+    std::uint32_t client_keepalive_idle_ms = 0;  // idle between requests: close
+    std::uint32_t client_write_idle_ms = 0;      // client not reading the response: close
+    std::uint32_t backend_connect_ms = 0;        // opening a backend connection: failure, 502
+    std::uint32_t backend_response_ms = 0;       // request sent, waiting for response headers: failure, 504
+    std::uint32_t backend_idle_ms = 0;           // backend stalls while sending or receiving a body
     // On shutdown, in-flight requests get this long to finish before connections are forced closed.
     std::uint32_t shutdown_grace_ms = 0;
+};
+
+// IPv4 network in host byte order, e.g. 10.0.0.0/8.
+struct Ipv4Cidr {
+    std::uint32_t network = 0;
+    std::uint32_t mask = 0;
+
+    bool contains(std::uint32_t address) const noexcept { return (address & mask) == network; }
+};
+
+enum class HostHeaderMode : std::uint8_t {
+    Preserve,  // forward the client's Host (default in plan IV.6)
+    Backend,   // rewrite Host to the backend's address:port
 };
 
 struct WorkersConfig {
@@ -71,6 +93,7 @@ struct BackendConfig {
 struct GroupConfig {
     std::string name;
     std::vector<BackendConfig> backends;
+    HostHeaderMode host_header = HostHeaderMode::Preserve;
 };
 
 struct RoutingConfig {
@@ -87,8 +110,11 @@ struct ConfigSnapshot {
     TimeoutsConfig timeouts;
     std::vector<GroupConfig> groups;
     RoutingConfig routing;
+    // Upstream proxies whose X-Forwarded-* headers are believed (plan IV.6, VII). Empty: none.
+    std::vector<Ipv4Cidr> trusted_proxies;
 
     const GroupConfig* find_group(std::string_view name) const noexcept;
+    bool is_trusted_proxy(std::uint32_t address_host_order) const noexcept;
 };
 
 }  // namespace lb

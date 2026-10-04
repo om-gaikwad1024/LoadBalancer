@@ -43,6 +43,18 @@ private:
     enum class Stage : std::uint8_t { Request, Response };
     enum class Pending : std::uint8_t { None, ClientRecv, ClientSend, PoolWait, BackendConnect, BackendSend, BackendRecv };
 
+    // Plan VI timeouts. Exactly one deadline is armed at a time: the one for the current wait.
+    enum class Deadline : std::uint8_t {
+        None,
+        ClientHeader,     // absolute: from accept (first request) or from the request's first byte
+        ClientKeepAlive,  // absolute: from the end of the previous response
+        ClientBody,       // idle: re-armed on every body read
+        ClientWrite,      // idle: re-armed on every send to the client
+        BackendConnect,
+        BackendResponse,  // absolute: from the end of the request to the response head
+        BackendIdle,      // idle: backend sends or receives a body too slowly
+    };
+
     // Receive buffer: bytes not yet consumed by the parser.
     class InBuffer {
     public:
@@ -69,6 +81,12 @@ private:
     bool begin_io(Pending kind, SOCKET s);
     void io_failed_immediately(Pending kind, int error);
     bool try_stale_retry();
+
+    Deadline desired_deadline(Pending kind, TimePoint* at) const;
+    void update_deadline(Pending kind);
+    void disarm_deadline() noexcept;
+    void on_deadline(std::uint64_t generation) noexcept;  // timer thread
+    void handle_timeout(Deadline expired);
 
     void process_client_input();
     void on_request_head();
@@ -100,6 +118,21 @@ private:
 
     SOCKET client_ = INVALID_SOCKET;
     sockaddr_in peer_{};
+    std::uint32_t peer_address_ = 0;  // host byte order
+    std::string peer_ip_;
+    TimeoutsConfig timeouts_;  // refreshed from each request's config snapshot
+
+    // Deadline state (plan VI).
+    Deadline armed_ = Deadline::None;
+    TimePoint armed_at_{};
+    TimerService::Id deadline_timer_ = 0;
+    std::uint64_t deadline_generation_ = 0;
+    Deadline expired_ = Deadline::None;
+    bool first_request_ = true;
+    TimePoint head_deadline_{};
+    bool head_deadline_set_ = false;
+    TimePoint idle_since_{};
+    TimePoint response_deadline_{};
     SOCKET backend_ = INVALID_SOCKET;
     bool backend_connected_ = false;
     std::shared_ptr<backend::BackendRuntime> backend_rt_;  // selected backend for the current request
@@ -123,6 +156,8 @@ private:
     // Per-request state.
     std::shared_ptr<const ConfigSnapshot> config_;  // captured when the request starts (plan II.7)
     std::uint64_t request_id_ = 0;
+    std::string request_tag_;  // X-Request-Id (plan IV.6)
+    bool request_head_seen_ = false;
     Stage stage_ = Stage::Request;
     bool client_poll_ = false;   // parser may report more without new input
     bool backend_poll_ = false;

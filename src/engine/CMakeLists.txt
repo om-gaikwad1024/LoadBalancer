@@ -23,6 +23,8 @@ add_library(lb_engine STATIC
   net/listener.h
   net/listener.cpp
   proxy/trace.h
+  proxy/forwarding.h
+  proxy/forwarding.cpp
   proxy/http_writer.h
   proxy/http_writer.cpp
   proxy/session_context.h

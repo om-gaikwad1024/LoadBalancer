@@ -34,12 +34,17 @@ struct ClientResponse {
 
 class TestClient {
 public:
-    explicit TestClient(std::uint16_t port, DWORD recv_timeout_ms = 5000) {
+    // receive_buffer > 0 shrinks SO_RCVBUF before connecting (to make a client a slow reader).
+    explicit TestClient(std::uint16_t port, DWORD recv_timeout_ms = 5000, int receive_buffer = 0) {
         WSADATA wsa{};
         wsa_ok_ = ::WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
         socket_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         ::setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recv_timeout_ms),
                      sizeof(recv_timeout_ms));
+        if (receive_buffer > 0) {
+            ::setsockopt(socket_, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&receive_buffer),
+                         sizeof(receive_buffer));
+        }
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = ::htons(port);

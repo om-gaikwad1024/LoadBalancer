@@ -25,12 +25,15 @@ json good_config() {
       "pool": { "max_connections_per_backend": 128, "max_idle_per_backend": 32, "idle_timeout_ms": 30000,
                 "max_waiters_per_backend": 500, "wait_timeout_ms": 1000 },
       "maintenance": { "interval_ms": 250 },
-      "timeouts": { "shutdown_grace_ms": 5000 },
+      "timeouts": { "client_header_ms": 10000, "client_body_idle_ms": 20000, "client_keepalive_idle_ms": 30000,
+                    "client_write_idle_ms": 40000, "backend_connect_ms": 3000, "backend_response_ms": 50000,
+                    "backend_idle_ms": 60000, "shutdown_grace_ms": 5000 },
+      "trusted_proxies": [ "10.0.0.0/8", "192.168.1.7" ],
       "groups": [
-        { "name": "web", "backends": [
+        { "name": "web", "host_header": "preserve", "backends": [
             { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 3 },
             { "id": "web-2", "address": "127.0.0.2", "port": 9002, "weight": 1 } ] },
-        { "name": "api", "backends": [
+        { "name": "api", "host_header": "backend", "backends": [
             { "id": "api-1", "address": "10.0.0.5", "port": 7000, "weight": 1 } ] }
       ],
       "routing": { "default_group": "web" }
@@ -112,6 +115,20 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.pool.max_waiters_per_backend, 500u);
     EXPECT_EQ(c.pool.wait_timeout_ms, 1000u);
     EXPECT_EQ(c.maintenance.interval_ms, 250u);
+    EXPECT_EQ(c.timeouts.client_header_ms, 10000u);
+    EXPECT_EQ(c.timeouts.client_body_idle_ms, 20000u);
+    EXPECT_EQ(c.timeouts.client_keepalive_idle_ms, 30000u);
+    EXPECT_EQ(c.timeouts.client_write_idle_ms, 40000u);
+    EXPECT_EQ(c.timeouts.backend_connect_ms, 3000u);
+    EXPECT_EQ(c.timeouts.backend_response_ms, 50000u);
+    EXPECT_EQ(c.timeouts.backend_idle_ms, 60000u);
+    EXPECT_EQ(c.groups[0].host_header, lb::HostHeaderMode::Preserve);
+    EXPECT_EQ(c.groups[1].host_header, lb::HostHeaderMode::Backend);
+    ASSERT_EQ(c.trusted_proxies.size(), 2u);
+    EXPECT_TRUE(c.is_trusted_proxy(0x0A010203));   // 10.1.2.3
+    EXPECT_TRUE(c.is_trusted_proxy(0xC0A80107));   // 192.168.1.7
+    EXPECT_FALSE(c.is_trusted_proxy(0xC0A80108));  // 192.168.1.8
+    EXPECT_FALSE(c.is_trusted_proxy(0x0B000001));  // 11.0.0.1
     ASSERT_EQ(c.groups.size(), 2u);
     EXPECT_EQ(c.groups[0].name, "web");
     ASSERT_EQ(c.groups[0].backends.size(), 2u);
@@ -249,7 +266,24 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/pool/idle_timeout_ms", 0, "between 1 and 3600000"},
     BadValueCase{"/pool/max_waiters_per_backend", 1000001, "between 0 and 1000000"},
     BadValueCase{"/pool/wait_timeout_ms", 0, "between 1 and 600000"},
-    BadValueCase{"/maintenance/interval_ms", 9, "between 10 and 60000"}), bad_value_name);
+    BadValueCase{"/maintenance/interval_ms", 9, "between 10 and 60000"},
+    BadValueCase{"/timeouts/client_header_ms", 0, "between 1 and 600000"},
+    BadValueCase{"/timeouts/backend_response_ms", 600001, "between 1 and 600000"},
+    BadValueCase{"/groups/0/host_header", "rewrite", "must be \"preserve\" or \"backend\""},
+    BadValueCase{"/groups/0/host_header", 1, "expected a string"},
+    BadValueCase{"/trusted_proxies", "10.0.0.0/8", "expected an array"},
+    BadValueCase{"/trusted_proxies/0", "10.0.0.0/33", "IPv4 address or CIDR"},
+    BadValueCase{"/trusted_proxies/0", "10.0.0.1/8", "without host bits"},
+    BadValueCase{"/trusted_proxies/0", "localhost", "IPv4 address or CIDR"},
+    BadValueCase{"/trusted_proxies/0", "10.0.0.0/", "IPv4 address or CIDR"},
+    BadValueCase{"/trusted_proxies/1", 7, "IPv4 address or CIDR"}), bad_value_name);
+
+TEST(ConfigLoader, EmptyTrustedProxiesListIsValid) {
+    const auto r = load(with(good_config(), "/trusted_proxies", json::array()));
+    ASSERT_TRUE(r.ok()) << describe(r);
+    EXPECT_TRUE(r.snapshot->trusted_proxies.empty());
+    EXPECT_FALSE(r.snapshot->is_trusted_proxy(0x7F000001));
+}
 
 INSTANTIATE_TEST_SUITE_P(BadAddress, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/listen/address", "localhost", "IPv4 address literal"},
