@@ -43,8 +43,8 @@ TEST_F(ProxyTest, ClientKeepAliveCarriesManyRequests) {
     EXPECT_TRUE(eventually([&] { return engine().stats().requests_completed == 5; }));
     const auto s = engine().stats();
     EXPECT_EQ(s.connections_accepted, 1u);
-    // Step 1.4 opens one backend connection per request; the 1.5 pool reuses them.
-    EXPECT_EQ(s.backend_connections_opened, 5u);
+    EXPECT_EQ(s.backend_connections_opened, 1u);  // pooled keep-alive connection (plan IV.5)
+    EXPECT_EQ(s.backend_connections_reused, 4u);
 }
 
 TEST_F(ProxyTest, ContentLengthBodyIsForwarded) {

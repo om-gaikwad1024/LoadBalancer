@@ -5,8 +5,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
+#include "backend/registry.h"
 #include "config/config_store.h"
+#include "core/timer_service.h"
 #include "net/iocp.h"
 #include "net/listener.h"
 #include "net/winsock.h"
@@ -17,12 +22,53 @@ namespace lb {
 
 std::string_view engine_version() noexcept { return LB_VERSION; }
 
+namespace {
+
+// Plan V maintenance thread: periodic housekeeping off the request path. Step 1.5: closes
+// pooled connections past their idle timeout (later: stale sticky and rate-limit entries).
+class MaintenanceThread {
+public:
+    ~MaintenanceThread() { stop(); }
+
+    void start(std::chrono::milliseconds interval, backend::BackendRegistry& backends) {
+        thread_ = std::thread([this, interval, &backends] {
+            ::SetThreadDescription(::GetCurrentThread(), L"lb-maintenance");
+            std::unique_lock lock(mutex_);
+            while (!stopping_) {
+                if (wake_.wait_for(lock, interval, [this] { return stopping_; })) break;
+                lock.unlock();
+                backends.sweep(Clock::now());
+                lock.lock();
+            }
+        });
+    }
+
+    void stop() {
+        {
+            std::lock_guard lock(mutex_);
+            stopping_ = true;
+        }
+        wake_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    bool stopping_ = false;
+    std::thread thread_;
+};
+
+}  // namespace
+
 class EngineImpl final : public net::AcceptSink {
 public:
     explicit EngineImpl(std::shared_ptr<const ConfigSnapshot> config) : config_(std::move(config)) {
         ctx_.port = &port_;
         ctx_.ext = &ext_;
         ctx_.config = &config_;
+        ctx_.backends = &backends_;
+        ctx_.timers = &timers_;
         ctx_.counters = &counters_;
         ctx_.registry = &registry_;
         ctx_.trace = &trace_;
@@ -38,12 +84,19 @@ public:
             return false;
         }
         const auto config = config_.current();
+        if (!config) {
+            *error = "no configuration (the config was rejected or never loaded)";
+            return false;
+        }
+        backends_.load(*config);
         if (!winsock_.init(error) || !port_.create(error) || !ext_.load(error)) return false;
 
         const std::uint32_t threads =
             config->workers.threads ? *config->workers.threads
                                     : static_cast<std::uint32_t>(::GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
         workers_.start(port_, threads == 0 ? 1 : threads);
+        timers_.start();
+        maintenance_.start(std::chrono::milliseconds(config->maintenance.interval_ms), backends_);
         started_ = true;
 
         listener_ = std::make_unique<net::Listener>(port_, ext_, *this);
@@ -75,7 +128,12 @@ public:
             }
         }
 
-        // 4. No I/O can be outstanding any more: stop the workers and release the port.
+        // 4. No session is left: close pooled idle connections and stop background threads.
+        maintenance_.stop();
+        timers_.stop();
+        backends_.close_all_idle();
+
+        // 5. No I/O can be outstanding any more: stop the workers and release the port.
         workers_.stop();
         listener_.reset();
         port_.close();
@@ -110,16 +168,32 @@ public:
         s.requests_completed = counters_.requests_completed.load();
         s.error_responses = counters_.error_responses.load();
         s.backend_connections_opened = counters_.backend_connections_opened.load();
+        s.backend_connections_reused = counters_.backend_connections_reused.load();
+        s.stale_retries = counters_.stale_retries.load();
+        s.pool_rejections = counters_.pool_rejections.load();
         return s;
     }
+
+    std::vector<BackendStats> backend_stats() const {
+        std::vector<BackendStats> out;
+        for (const auto& b : backends_.all()) out.push_back(b->stats());
+        return out;
+    }
+
+    bool set_backend_state(std::string_view id, BackendState state) { return backends_.set_state(id, state); }
 
     void set_trace_sink(TraceSink* sink) noexcept { trace_.store(sink, std::memory_order_release); }
 
 private:
+    // Declaration order is teardown order in reverse: Winsock outlives every socket, the
+    // registry (pools) outlives sessions, background threads stop before what they touch.
     ConfigStore config_;
     net::WinsockRuntime winsock_;
     net::CompletionPort port_;
     net::SocketExtensions ext_;
+    backend::BackendRegistry backends_;
+    TimerService timers_;
+    MaintenanceThread maintenance_;
     net::WorkerPool workers_;
     std::unique_ptr<net::Listener> listener_;
     proxy::SessionRegistry registry_;
@@ -141,6 +215,10 @@ void Engine::stop() { impl_->stop(); }
 std::uint16_t Engine::listen_port() const noexcept { return impl_->listen_port(); }
 std::uint32_t Engine::worker_threads() const noexcept { return impl_->worker_threads(); }
 EngineStats Engine::stats() const noexcept { return impl_->stats(); }
+std::vector<BackendStats> Engine::backend_stats() const { return impl_->backend_stats(); }
+bool Engine::set_backend_state(std::string_view backend_id, BackendState state) {
+    return impl_->set_backend_state(backend_id, state);
+}
 void Engine::set_trace_sink(TraceSink* sink) noexcept { impl_->set_trace_sink(sink); }
 
 }  // namespace lb

@@ -57,11 +57,13 @@ int main(int argc, char** argv) {
     std::printf("stopping...\n");
     engine.stop();
     const auto s = engine.stats();
-    std::printf("stopped: %llu connections, %llu requests, %llu error responses, %llu backend connections\n",
+    std::printf("stopped: %llu connections, %llu requests, %llu error responses, %llu backend connections opened, "
+                "%llu requests on reused connections\n",
                 static_cast<unsigned long long>(s.connections_accepted),
                 static_cast<unsigned long long>(s.requests_completed),
                 static_cast<unsigned long long>(s.error_responses),
-                static_cast<unsigned long long>(s.backend_connections_opened));
+                static_cast<unsigned long long>(s.backend_connections_opened),
+                static_cast<unsigned long long>(s.backend_connections_reused));
     ::CloseHandle(g_stop_event);
     return 0;
 }

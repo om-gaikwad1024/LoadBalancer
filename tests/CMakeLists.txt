@@ -8,6 +8,8 @@ add_executable(lb_unit_tests
   unit/http_test_util.h
   unit/http_parser_test.cpp
   unit/http_corpus_test.cpp
+  unit/connection_pool_test.cpp
+  unit/timer_service_test.cpp
 )
 target_link_libraries(lb_unit_tests PRIVATE lb_engine nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)
 lb_set_project_options(lb_unit_tests)
@@ -26,6 +28,7 @@ add_executable(lb_integration_tests
   integration/mock_backend_test.cpp
   integration/proxy_forwarding_test.cpp
   integration/proxy_lifecycle_test.cpp
+  integration/proxy_pool_test.cpp
 )
 target_link_libraries(lb_integration_tests PRIVATE
   lb_engine mock_backend_lib nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)

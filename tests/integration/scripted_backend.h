@@ -18,8 +18,10 @@ namespace lbtest {
 class ScriptedBackend {
 public:
     // close_after: close the connection after each response (also ends close-delimited bodies).
-    explicit ScriptedBackend(std::string response, bool close_after = true)
-        : response_(std::move(response)), close_after_(close_after) {
+    // answers_per_connection > 0: answer that many requests per connection, then close the
+    // connection silently on the next one, like a backend whose keep-alive just expired.
+    explicit ScriptedBackend(std::string response, bool close_after = true, int answers_per_connection = 0)
+        : response_(std::move(response)), close_after_(close_after), answers_per_connection_(answers_per_connection) {
         WSADATA wsa{};
         ::WSAStartup(MAKEWORD(2, 2), &wsa);
         listener_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -51,11 +53,14 @@ public:
         return requests_;
     }
 
+    int connections() const noexcept { return connections_.load(); }
+
 private:
     void run() {
         while (!stopping_) {
             SOCKET s = ::accept(listener_, nullptr, nullptr);
             if (s == INVALID_SOCKET) return;
+            ++connections_;
             const DWORD timeout_ms = 2000;
             ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
             serve(s);
@@ -65,6 +70,7 @@ private:
 
     void serve(SOCKET s) {
         std::string buf;
+        int answered = 0;
         while (!stopping_) {
             std::size_t end;
             while ((end = buf.find("\r\n\r\n")) == std::string::npos) {
@@ -76,11 +82,11 @@ private:
                 std::lock_guard lock(mutex_);
                 requests_.push_back(request);
             }
+            if (answers_per_connection_ > 0 && answered >= answers_per_connection_) return;  // silent close
+            ++answered;
             ::send(s, response_.data(), static_cast<int>(response_.size()), 0);
             if (close_after_) {
-                ::shutdown(s, SD_SEND);
-                while (recv_more(s, &buf)) {  // wait for the proxy to close its side
-                }
+                ::shutdown(s, SD_SEND);  // FIN; the proxy may keep its end pooled until it notices
                 return;
             }
         }
@@ -96,6 +102,8 @@ private:
 
     std::string response_;
     bool close_after_;
+    int answers_per_connection_;
+    std::atomic<int> connections_{0};
     SOCKET listener_ = INVALID_SOCKET;
     std::uint16_t port_ = 0;
     std::atomic<bool> stopping_{false};

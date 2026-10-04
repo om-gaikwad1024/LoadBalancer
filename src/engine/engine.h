@@ -4,7 +4,9 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "backend/backend_types.h"
 #include "config/config.h"
 #include "proxy/trace.h"
 
@@ -19,6 +21,9 @@ struct EngineStats {
     std::uint64_t requests_completed = 0;
     std::uint64_t error_responses = 0;       // proxy-generated 4xx/5xx
     std::uint64_t backend_connections_opened = 0;
+    std::uint64_t backend_connections_reused = 0;  // requests sent on a pooled keep-alive connection
+    std::uint64_t stale_retries = 0;    // bodiless idempotent requests resent after a dead pooled connection
+    std::uint64_t pool_rejections = 0;  // 503 because a backend's pool was full and its wait queue full or timed out
 };
 
 class EngineImpl;
@@ -44,6 +49,13 @@ public:
     std::uint16_t listen_port() const noexcept;
     std::uint32_t worker_threads() const noexcept;
     EngineStats stats() const noexcept;
+
+    // Copied per-backend state for the dashboard (plan IV.4, IV.5).
+    std::vector<BackendStats> backend_stats() const;
+
+    // Operator/health-check entry point: unhealthy or draining backends stop receiving new
+    // requests and their idle pooled connections are closed at once. False if the id is unknown.
+    bool set_backend_state(std::string_view backend_id, BackendState state);
 
     // Optional per-step trace (plan IV.18). Set before start(); the sink must outlive the engine run.
     void set_trace_sink(TraceSink* sink) noexcept;

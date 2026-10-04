@@ -51,6 +51,28 @@ because the proxy never reads further ahead than one buffer per direction.
 | `buffers.client_read_bytes` | integer | 1024–1048576 | Receive size on the client connection |
 | `buffers.backend_read_bytes` | integer | 1024–1048576 | Receive size on the backend connection |
 
+## `pool`: backend connection pool (plan IV.5)
+Each backend has its own pool and its own lock. A connection goes back to the pool only after its
+response was read completely with clean framing, the backend allowed keep-alive, and the backend
+is still healthy and not draining. A pooled connection the backend has closed is detected when
+it's taken and discarded. If a reused connection still fails before any response byte arrives, a
+bodiless GET/HEAD/OPTIONS request is sent again once on a fresh connection; any other request
+gets 502 (plan VI). When a backend becomes unhealthy or starts draining, its idle connections
+are closed at once.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `pool.max_connections_per_backend` | integer | 1–65535 | Cap on connections to one backend, counting connecting, in use and idle |
+| `pool.max_idle_per_backend` | integer | 0–65535, ≤ `max_connections_per_backend` | Idle keep-alive connections kept for reuse. `0` disables reuse (one connection per request) |
+| `pool.idle_timeout_ms` | integer | 1–3600000 | An idle pooled connection older than this is closed by the maintenance thread. Keep it below the backends' own keep-alive timeout |
+| `pool.max_waiters_per_backend` | integer | 0–1000000 | When a backend is at its cap, up to this many requests wait for a connection. Beyond it: **503** at once |
+| `pool.wait_timeout_ms` | integer | 1–600000 | A waiting request that gets no connection within this time: **503** |
+
+## `maintenance` (plan V)
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `maintenance.interval_ms` | integer | 10–60000 | How often the maintenance thread runs: it closes idle pooled connections past `pool.idle_timeout_ms` (later also expired sticky-session and rate-limit entries) |
+
 ## `timeouts` (plan VI)
 Every interval is measured on the monotonic clock. Step 1.6 adds the rest of the plan VI timeouts table.
 

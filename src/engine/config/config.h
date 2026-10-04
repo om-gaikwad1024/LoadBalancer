@@ -24,6 +24,20 @@ struct BuffersConfig {
     std::uint32_t backend_read_bytes = 0;  // per-connection receive buffer, backend side
 };
 
+// Backend connection pool, per backend (plan IV.5).
+struct PoolConfig {
+    std::uint32_t max_connections_per_backend = 0;  // open + connecting + in use
+    std::uint32_t max_idle_per_backend = 0;         // kept for reuse; 0 disables pooling
+    std::uint32_t idle_timeout_ms = 0;              // idle longer than this: closed by the maintenance thread
+    std::uint32_t max_waiters_per_backend = 0;      // queue length when the cap is reached; full queue: 503
+    std::uint32_t wait_timeout_ms = 0;              // queued longer than this: 503
+};
+
+// Maintenance thread (plan V): idle-connection sweeps, later stale sticky/rate-limit entries.
+struct MaintenanceConfig {
+    std::uint32_t interval_ms = 0;
+};
+
 struct TimeoutsConfig {
     // On shutdown, in-flight requests get this long to finish before connections are forced closed.
     std::uint32_t shutdown_grace_ms = 0;
@@ -68,6 +82,8 @@ struct ConfigSnapshot {
     WorkersConfig workers;
     LimitsConfig limits;
     BuffersConfig buffers;
+    PoolConfig pool;
+    MaintenanceConfig maintenance;
     TimeoutsConfig timeouts;
     std::vector<GroupConfig> groups;
     RoutingConfig routing;

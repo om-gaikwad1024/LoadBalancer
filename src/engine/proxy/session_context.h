@@ -9,7 +9,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "backend/registry.h"
 #include "config/config_store.h"
+#include "core/timer_service.h"
 #include "net/iocp.h"
 #include "net/winsock.h"
 #include "proxy/trace.h"
@@ -26,6 +28,9 @@ struct EngineCounters {
     std::atomic<std::uint64_t> requests_completed{0};
     std::atomic<std::uint64_t> error_responses{0};
     std::atomic<std::uint64_t> backend_connections_opened{0};
+    std::atomic<std::uint64_t> backend_connections_reused{0};  // requests sent on a pooled connection
+    std::atomic<std::uint64_t> stale_retries{0};  // idempotent requests resent after a dead pooled connection
+    std::atomic<std::uint64_t> pool_rejections{0};  // 503: wait queue full or wait timed out
 };
 
 // Live sessions, so shutdown can reach them. Touched only when a connection opens or
@@ -49,6 +54,8 @@ struct SessionContext {
     net::CompletionPort* port = nullptr;
     const net::SocketExtensions* ext = nullptr;
     ConfigStore* config = nullptr;
+    backend::BackendRegistry* backends = nullptr;
+    TimerService* timers = nullptr;
     EngineCounters* counters = nullptr;
     SessionRegistry* registry = nullptr;
     std::atomic<TraceSink*>* trace = nullptr;

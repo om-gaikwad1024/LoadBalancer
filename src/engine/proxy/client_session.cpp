@@ -2,8 +2,11 @@
 
 #include <ws2tcpip.h>
 
+#include <chrono>
 #include <cstring>
 #include <utility>
+
+#include "core/debug_assert.h"
 
 namespace lb::proxy {
 
@@ -39,6 +42,7 @@ ClientSession::ClientSession(SessionContext& ctx, SOCKET client, const sockaddr_
         stage_ = Stage::Response;
         response_done_ = true;
         response_started_ = true;
+        proxy_error_ = true;
         response_status_ = 503;
     }
 }
@@ -76,7 +80,10 @@ void ClientSession::on_io_complete(net::IoOp* /*op*/, DWORD bytes, DWORD error) 
     std::lock_guard lock(mutex_);
     keep = std::move(pending_self_);
     const Pending kind = std::exchange(pending_, Pending::None);
-    if (closed_) return;
+    if (closed_) {
+        if (kind == Pending::PoolWait) on_pool_ticket(/*session_closed=*/true);
+        return;
+    }
     try {
         complete(kind, bytes, error);
         advance();
@@ -97,6 +104,10 @@ void ClientSession::advance() {
             }
             if (!backend_out_.empty()) {
                 if (!backend_connected_) {
+                    if (!holding_slot_) {
+                        if (acquire_backend_connection()) return;  // queued for a slot
+                        continue;
+                    }
                     if (start_backend_connect()) return;
                     continue;
                 }
@@ -164,9 +175,12 @@ void ClientSession::complete(Pending kind, DWORD bytes, DWORD error) {
             }
             if (stage_ == Stage::Response && response_started_) response_flushed_ = true;
             break;
+        case Pending::PoolWait:
+            on_pool_ticket(/*session_closed=*/false);
+            break;
         case Pending::BackendConnect:
             if (error != 0) {
-                fail_request(502);
+                fail_request(502, /*backend_fault=*/true);
                 return;
             }
             ::setsockopt(backend_, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, nullptr, 0);
@@ -176,7 +190,8 @@ void ClientSession::complete(Pending kind, DWORD bytes, DWORD error) {
             break;
         case Pending::BackendSend:
             if (error != 0) {
-                fail_request(502);
+                if (try_stale_retry()) break;
+                fail_request(502, /*backend_fault=*/true);
                 return;
             }
             backend_out_sent_ += bytes;
@@ -186,8 +201,12 @@ void ClientSession::complete(Pending kind, DWORD bytes, DWORD error) {
             }
             break;
         case Pending::BackendRecv:
-            if (error != 0 || bytes == 0) backend_eof_ = true;
-            else backend_in_.commit(bytes);
+            if (error != 0 || bytes == 0) {
+                backend_eof_ = true;
+            } else {
+                backend_in_.commit(bytes);
+                backend_bytes_received_ += bytes;
+            }
             break;
     }
 }
@@ -232,6 +251,75 @@ bool ClientSession::issue_send(Pending kind, SOCKET s, const std::string& out, s
     return true;
 }
 
+// Returns true if the request is now queued for a pool slot (an I/O-like wait is pending).
+bool ClientSession::acquire_backend_connection() {
+    // Prepared before acquire(): once queued, another thread may wake us at any moment.
+    begin_io(Pending::PoolWait, INVALID_SOCKET);
+    auto ticket = std::make_shared<backend::PoolTicket>();
+    ticket->wake = [this] { ::PostQueuedCompletionStatus(ctx_.port->handle(), 0, 0, &op_.overlapped); };
+
+    SOCKET s = INVALID_SOCKET;
+    const auto result = backend_rt_->pool.acquire(&s, ticket, std::exchange(prefer_new_connection_, false));
+    if (result == backend::ConnectionPool::Acquire::Queued) {
+        ticket_ = std::move(ticket);
+        const auto wait = std::chrono::milliseconds(config_->pool.wait_timeout_ms);
+        wait_timer_ = ctx_.timers->schedule(Clock::now() + wait, [rt = backend_rt_, t = ticket_] {
+            if (rt->pool.cancel(t)) t->wake();  // still queued: wake it with no connection (503)
+        });
+        return true;
+    }
+
+    pending_ = Pending::None;
+    pending_self_.reset();
+    switch (result) {
+        case backend::ConnectionPool::Acquire::Reused:
+            backend_ = s;
+            holding_slot_ = true;
+            backend_connected_ = true;
+            reused_connection_ = true;
+            ctx_.counters->backend_connections_reused.fetch_add(1, std::memory_order_relaxed);
+            trace(TraceStep::BackendConnected);
+            break;
+        case backend::ConnectionPool::Acquire::Connect:
+            holding_slot_ = true;
+            break;
+        case backend::ConnectionPool::Acquire::Rejected:
+        case backend::ConnectionPool::Acquire::Queued:
+            ctx_.counters->pool_rejections.fetch_add(1, std::memory_order_relaxed);
+            fail_request(503, /*backend_fault=*/false);
+            break;
+    }
+    return false;
+}
+
+// The queued ticket was settled: granted a connection, granted a slot, timed out, or
+// cancelled because this session closed.
+void ClientSession::on_pool_ticket(bool session_closed) {
+    if (wait_timer_ != 0) ctx_.timers->cancel(wait_timer_);
+    wait_timer_ = 0;
+    auto t = std::move(ticket_);
+    if (!t) return;
+
+    if (session_closed) {  // hand back whatever was granted
+        if (t->socket != INVALID_SOCKET) backend_rt_->pool.release(t->socket, false, Clock::now());
+        else if (t->may_connect) backend_rt_->pool.abandon_slot();
+        return;
+    }
+    if (t->socket != INVALID_SOCKET) {
+        backend_ = t->socket;
+        holding_slot_ = true;
+        backend_connected_ = true;
+        reused_connection_ = true;
+        ctx_.counters->backend_connections_reused.fetch_add(1, std::memory_order_relaxed);
+        trace(TraceStep::BackendConnected);
+    } else if (t->may_connect) {
+        holding_slot_ = true;
+    } else {
+        ctx_.counters->pool_rejections.fetch_add(1, std::memory_order_relaxed);
+        fail_request(503, /*backend_fault=*/false);  // waited wait_timeout_ms for a slot
+    }
+}
+
 bool ClientSession::start_backend_connect() {
     backend_ = net::make_overlapped_tcp_socket();
     if (backend_ == INVALID_SOCKET) {
@@ -250,14 +338,32 @@ bool ClientSession::start_backend_connect() {
     }
     ctx_.counters->backend_connections_opened.fetch_add(1, std::memory_order_relaxed);
     begin_io(Pending::BackendConnect, backend_);
-    if (!ctx_.ext->connect_ex(backend_, reinterpret_cast<const sockaddr*>(&backend_addr_), sizeof(backend_addr_),
-                              nullptr, 0, nullptr, &op_.overlapped)) {
+    if (!ctx_.ext->connect_ex(backend_, reinterpret_cast<const sockaddr*>(&backend_rt_->address),
+                              sizeof(backend_rt_->address), nullptr, 0, nullptr, &op_.overlapped)) {
         const int err = ::WSAGetLastError();
         if (err != ERROR_IO_PENDING) {
             io_failed_immediately(Pending::BackendConnect, err);
             return false;
         }
     }
+    return true;
+}
+
+// Plan VI "stale pooled connection": detected on reuse; resend on a fresh connection when
+// that is safe, otherwise the caller answers 502.
+bool ClientSession::try_stale_retry() {
+    if (!reused_connection_ || stale_retried_ || !retry_safe_ || backend_bytes_received_ > 0) return false;
+    stale_retried_ = true;
+    ctx_.counters->stale_retries.fetch_add(1, std::memory_order_relaxed);
+    close_backend(false);
+    backend_out_ = retry_head_;
+    backend_out_sent_ = 0;
+    backend_in_.clear();
+    backend_eof_ = false;
+    backend_poll_ = false;
+    prefer_new_connection_ = true;
+    stage_ = Stage::Request;
+    request_done_ = true;  // the whole request is in retry_head_
     return true;
 }
 
@@ -281,7 +387,7 @@ void ClientSession::process_client_input() {
             request_done_ = true;
             break;
         case http::ParseEvent::Error:
-            fail_request(request_parser_.error().status);
+            fail_request(request_parser_.error().status, /*backend_fault=*/false);
             break;
     }
 }
@@ -297,19 +403,22 @@ void ClientSession::on_request_head() {
     is_head_ = req.method == "HEAD";
     backend_chunked_ = req.framing == http::BodyFraming::Chunked;
 
-    // Step 1.4: every request goes to the first backend of the default group.
-    // The registry (1.5) and load balancer (1.7) replace this selection.
-    const GroupConfig* group = config_->find_group(config_->routing.default_group);
-    if (group == nullptr || group->backends.empty()) {
-        fail_request(503);
+    // Step 1.5: the first eligible backend of the default group. The load balancer
+    // (step 1.7) replaces this choice; the eligibility rule stays the same.
+    for (const auto& b : ctx_.backends->group(config_->routing.default_group)) {
+        if (b->eligible()) {
+            backend_rt_ = b;
+            break;
+        }
+    }
+    if (!backend_rt_) {
+        fail_request(503, /*backend_fault=*/false);  // no healthy, non-draining backend
         return;
     }
-    const BackendConfig& backend = group->backends.front();
-    backend_addr_ = {};
-    backend_addr_.sin_family = AF_INET;
-    backend_addr_.sin_port = ::htons(backend.port);
-    ::inet_pton(AF_INET, backend.address.c_str(), &backend_addr_.sin_addr);
-    backend_host_ = backend.address + ":" + std::to_string(backend.port);
+    LB_DEBUG_ASSERT(backend_rt_->eligible(), "a request may only go to a healthy, non-draining backend (IV.4)");
+    backend_rt_->in_flight.fetch_add(1, std::memory_order_relaxed);
+    backend_rt_->requests.fetch_add(1, std::memory_order_relaxed);
+    backend_in_use_ = true;
     trace(TraceStep::BackendSelected);
 
     // The proxy answers Expect: 100-continue itself and strips it, so the client sends
@@ -318,7 +427,13 @@ void ClientSession::on_request_head() {
         req.fields.has_token("Expect", "100-continue")) {
         client_out_ = "HTTP/1.1 100 Continue\r\n\r\n";
     }
-    append_backend_request_head(backend_out_, req, backend_host_);
+    append_backend_request_head(backend_out_, req, backend_rt_->endpoint);
+
+    const bool idempotent = req.method == "GET" || req.method == "HEAD" || req.method == "OPTIONS";
+    const bool bodiless = req.framing == http::BodyFraming::None ||
+                          (req.framing == http::BodyFraming::ContentLength && req.content_length == 0);
+    retry_safe_ = idempotent && bodiless;
+    if (retry_safe_) retry_head_ = backend_out_;
 }
 
 void ClientSession::process_backend_input() {
@@ -368,6 +483,8 @@ void ClientSession::on_response_head() {
 
 void ClientSession::handle_backend_eof() {
     backend_eof_ = false;
+    // A reused connection that died before any response byte: the backend closed it while idle.
+    if (!response_started_ && try_stale_retry()) return;
     const auto r = response_parser_.finish();
     if (r.event == http::ParseEvent::MessageComplete && response_started_ && !interim_) {
         if (client_mode_ == ClientBodyMode::Chunked) append_last_chunk(client_out_);
@@ -382,15 +499,17 @@ void ClientSession::handle_backend_eof() {
 // than a corrupted one (plan VI).
 void ClientSession::backend_response_failed() {
     if (!response_flushed_) {
-        fail_request(502);
+        fail_request(502, /*backend_fault=*/true);
         return;
     }
     trace(TraceStep::Aborted);
+    end_backend_use(BackendOutcome::Failure);
     close_all(true);
 }
 
-void ClientSession::fail_request(int status) {
-    close_backend();
+void ClientSession::fail_request(int status, bool backend_fault) {
+    close_backend(false);
+    end_backend_use(backend_fault ? BackendOutcome::Failure : BackendOutcome::NotJudged);
     trace(TraceStep::ErrorResponse, status);
     ctx_.counters->error_responses.fetch_add(1, std::memory_order_relaxed);
     client_out_ = error_response(status);
@@ -402,6 +521,7 @@ void ClientSession::fail_request(int status) {
     backend_poll_ = false;
     interim_ = false;
     keep_alive_ = false;
+    proxy_error_ = true;
     response_started_ = true;
     response_done_ = true;
     response_status_ = status;
@@ -409,7 +529,16 @@ void ClientSession::fail_request(int status) {
 }
 
 void ClientSession::finish_exchange() {
-    close_backend();  // step 1.4: no pooling yet
+    if (!proxy_error_) {
+        // Back to the pool only after a cleanly framed, complete response (plan IV.5), and
+        // only while the backend may still take traffic.
+        const bool reusable = response_parser_.response().keep_alive && backend_rt_ && backend_rt_->eligible() &&
+                              !ctx_.stopping->load(std::memory_order_relaxed);
+        close_backend(reusable);
+        end_backend_use(BackendOutcome::Success);
+    } else {
+        close_backend(false);
+    }
     if (request_id_ != 0) {
         trace(TraceStep::ResponseCompleted, response_status_);
         ctx_.counters->requests_completed.fetch_add(1, std::memory_order_relaxed);
@@ -421,6 +550,14 @@ void ClientSession::finish_exchange() {
     reset_for_next_request();
 }
 
+void ClientSession::end_backend_use(BackendOutcome outcome) noexcept {
+    if (!backend_in_use_ || !backend_rt_) return;
+    backend_in_use_ = false;
+    backend_rt_->in_flight.fetch_sub(1, std::memory_order_relaxed);
+    if (outcome == BackendOutcome::Success) backend_rt_->successes.fetch_add(1, std::memory_order_relaxed);
+    if (outcome == BackendOutcome::Failure) backend_rt_->failures.fetch_add(1, std::memory_order_relaxed);
+}
+
 void ClientSession::reset_for_next_request() {
     request_parser_.reset();
     response_parser_.reset();
@@ -428,6 +565,7 @@ void ClientSession::reset_for_next_request() {
     backend_out_sent_ = 0;
     backend_in_.clear();
     config_.reset();
+    backend_rt_.reset();
     request_id_ = 0;
     stage_ = Stage::Request;
     client_poll_ = false;
@@ -444,19 +582,41 @@ void ClientSession::reset_for_next_request() {
     response_flushed_ = false;
     response_status_ = 0;
     client_mode_ = ClientBodyMode::None;
+    retry_safe_ = false;
+    stale_retried_ = false;
+    prefer_new_connection_ = false;
+    retry_head_.clear();
+    backend_bytes_received_ = 0;
+    backend_in_use_ = false;
+    proxy_error_ = false;
 }
 
-void ClientSession::close_backend() noexcept {
-    if (backend_ != INVALID_SOCKET) {
+void ClientSession::close_backend(bool reusable) noexcept {
+    if (holding_slot_ && backend_rt_) {
+        if (backend_ != INVALID_SOCKET && backend_connected_) {
+            backend_rt_->pool.release(backend_, reusable, Clock::now());  // closes it unless reused
+        } else {
+            if (backend_ != INVALID_SOCKET) ::closesocket(backend_);
+            backend_rt_->pool.abandon_slot();
+        }
+    } else if (backend_ != INVALID_SOCKET) {
         ::closesocket(backend_);
-        backend_ = INVALID_SOCKET;
     }
+    backend_ = INVALID_SOCKET;
     backend_connected_ = false;
+    holding_slot_ = false;
+    reused_connection_ = false;
 }
 
 void ClientSession::close_all(bool abortive) noexcept {
     closed_ = true;
-    close_backend();
+    // Queued for a pool slot: withdraw the ticket and wake ourselves so the pending
+    // reference is released through the normal completion path.
+    if (pending_ == Pending::PoolWait && ticket_ && backend_rt_) {
+        if (backend_rt_->pool.cancel(ticket_)) ticket_->wake();
+    }
+    close_backend(false);
+    end_backend_use(BackendOutcome::NotJudged);
     if (client_ != INVALID_SOCKET) {
         if (abortive) {
             linger lg{1, 0};  // RST: the client must not mistake a cut-off response for a complete one

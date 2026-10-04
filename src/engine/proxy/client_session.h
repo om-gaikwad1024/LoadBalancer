@@ -41,7 +41,7 @@ public:
 
 private:
     enum class Stage : std::uint8_t { Request, Response };
-    enum class Pending : std::uint8_t { None, ClientRecv, ClientSend, BackendConnect, BackendSend, BackendRecv };
+    enum class Pending : std::uint8_t { None, ClientRecv, ClientSend, PoolWait, BackendConnect, BackendSend, BackendRecv };
 
     // Receive buffer: bytes not yet consumed by the parser.
     class InBuffer {
@@ -63,9 +63,12 @@ private:
     void complete(Pending kind, DWORD bytes, DWORD error);
     bool issue_recv(Pending kind, SOCKET s, InBuffer& buffer, std::size_t read_size);
     bool issue_send(Pending kind, SOCKET s, const std::string& out, std::size_t sent);
+    bool acquire_backend_connection();
+    void on_pool_ticket(bool session_closed);
     bool start_backend_connect();
     bool begin_io(Pending kind, SOCKET s);
     void io_failed_immediately(Pending kind, int error);
+    bool try_stale_retry();
 
     void process_client_input();
     void on_request_head();
@@ -73,11 +76,17 @@ private:
     void on_response_head();
     void handle_backend_eof();
     void backend_response_failed();
-    void fail_request(int status);
+    // backend_fault: counts as a backend failure (connect error, broken response), as
+    // opposed to the proxy refusing the request (parse error, pool rejection).
+    void fail_request(int status, bool backend_fault);
     void finish_exchange();
+    enum class BackendOutcome : std::uint8_t { Success, Failure, NotJudged };
+    // Ends the current request's use of its backend: in-flight count and success/failure.
+    void end_backend_use(BackendOutcome outcome) noexcept;
     void reset_for_next_request();
 
-    void close_backend() noexcept;
+    // Gives the backend connection back to its pool (reusable) or closes it, freeing the slot.
+    void close_backend(bool reusable = false) noexcept;
     void close_all(bool abortive) noexcept;
     void trace(TraceStep step, int status = 0) const noexcept;
 
@@ -93,8 +102,11 @@ private:
     sockaddr_in peer_{};
     SOCKET backend_ = INVALID_SOCKET;
     bool backend_connected_ = false;
-    sockaddr_in backend_addr_{};
-    std::string backend_host_;
+    std::shared_ptr<backend::BackendRuntime> backend_rt_;  // selected backend for the current request
+    bool holding_slot_ = false;     // a pool slot is held: connecting, or a connection in use
+    bool reused_connection_ = false;
+    std::shared_ptr<backend::PoolTicket> ticket_;  // queued for a slot (Pending::PoolWait)
+    TimerService::Id wait_timer_ = 0;
 
     std::size_t client_read_size_ = 0;
     std::size_t backend_read_size_ = 0;
@@ -126,6 +138,15 @@ private:
     bool response_started_ = false;   // final response head queued for the client
     bool response_flushed_ = false;   // some final-response bytes already reached the client
     int response_status_ = 0;
+    // Stale pooled connection (plan VI): a bodiless idempotent request can be resent once
+    // on a fresh connection if the reused one dies before any response byte arrives.
+    bool retry_safe_ = false;
+    bool stale_retried_ = false;
+    bool prefer_new_connection_ = false;
+    std::string retry_head_;
+    std::uint64_t backend_bytes_received_ = 0;
+    bool backend_in_use_ = false;  // in_flight was incremented for backend_rt_
+    bool proxy_error_ = false;     // the response is proxy-generated, not the backend's
     http::Version client_version_ = http::Version::Http11;
     ClientBodyMode client_mode_ = ClientBodyMode::None;
 };

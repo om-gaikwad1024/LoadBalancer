@@ -1,6 +1,14 @@
 add_library(lb_engine STATIC
   core/clock.h
   core/no_mfc_guard.h
+  core/debug_assert.h
+  core/timer_service.h
+  core/timer_service.cpp
+  backend/backend_types.h
+  backend/connection_pool.h
+  backend/connection_pool.cpp
+  backend/registry.h
+  backend/registry.cpp
   config/config.h
   config/config_loader.h
   config/config_loader.cpp

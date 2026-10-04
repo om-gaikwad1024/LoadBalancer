@@ -51,6 +51,11 @@ constexpr std::uint64_t kMaxClientConnections = 1'000'000;
 constexpr std::uint64_t kMinReadBufferBytes = 1024;
 constexpr std::uint64_t kMaxReadBufferBytes = 1024 * 1024;
 constexpr std::uint64_t kMaxTimeoutMs = 600'000;
+constexpr std::uint64_t kMaxPoolConnections = 65535;
+constexpr std::uint64_t kMaxPoolWaiters = 1'000'000;
+constexpr std::uint64_t kMaxIdleTimeoutMs = 3'600'000;
+constexpr std::uint64_t kMinMaintenanceMs = 10;
+constexpr std::uint64_t kMaxMaintenanceMs = 60'000;
 constexpr std::string_view kAutoThreads = "auto";
 constexpr std::string_view kAnyAddress = "0.0.0.0";
 
@@ -243,6 +248,37 @@ void build_buffers(const json& root, Validator& v, ConfigSnapshot& out) {
     }
 }
 
+void build_pool(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/pool";
+    const json* j = Validator::field(root, "pool");
+    if (j == nullptr || !v.check_object(*j, path,
+                                        {"max_connections_per_backend", "max_idle_per_backend", "idle_timeout_ms",
+                                         "max_waiters_per_backend", "wait_timeout_ms"})) {
+        return;
+    }
+    PoolConfig& p = out.pool;
+    const auto set = [&](std::string_view key, std::uint64_t min, std::uint64_t max, std::uint32_t& field) {
+        if (auto value = v.get_uint(*j, path, key, min, max)) field = static_cast<std::uint32_t>(*value);
+    };
+    set("max_connections_per_backend", 1, kMaxPoolConnections, p.max_connections_per_backend);
+    set("max_idle_per_backend", 0, kMaxPoolConnections, p.max_idle_per_backend);
+    set("idle_timeout_ms", 1, kMaxIdleTimeoutMs, p.idle_timeout_ms);
+    set("max_waiters_per_backend", 0, kMaxPoolWaiters, p.max_waiters_per_backend);
+    set("wait_timeout_ms", 1, kMaxTimeoutMs, p.wait_timeout_ms);
+    if (p.max_connections_per_backend != 0 && p.max_idle_per_backend > p.max_connections_per_backend) {
+        v.error(child(path, "max_idle_per_backend"), "must not exceed max_connections_per_backend");
+    }
+}
+
+void build_maintenance(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/maintenance";
+    const json* j = Validator::field(root, "maintenance");
+    if (j == nullptr || !v.check_object(*j, path, {"interval_ms"})) return;
+    if (auto n = v.get_uint(*j, path, "interval_ms", kMinMaintenanceMs, kMaxMaintenanceMs)) {
+        out.maintenance.interval_ms = static_cast<std::uint32_t>(*n);
+    }
+}
+
 void build_timeouts(const json& root, Validator& v, ConfigSnapshot& out) {
     const std::string path = "/timeouts";
     const json* j = Validator::field(root, "timeouts");
@@ -396,11 +432,14 @@ ConfigLoadResult parse_config(std::string_view json_text) {
     for (const auto& path : duplicates.duplicates()) v.error(path, "duplicate key");
 
     auto snapshot = std::make_shared<ConfigSnapshot>();
-    if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "timeouts", "groups", "routing"})) {
+    if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "pool", "maintenance", "timeouts", "groups",
+                                  "routing"})) {
         build_listen(root, v, *snapshot);
         build_workers(root, v, *snapshot);
         build_limits(root, v, *snapshot);
         build_buffers(root, v, *snapshot);
+        build_pool(root, v, *snapshot);
+        build_maintenance(root, v, *snapshot);
         build_timeouts(root, v, *snapshot);
         const bool groups_valid = build_groups(root, v, *snapshot);
         build_routing(root, v, *snapshot, groups_valid);

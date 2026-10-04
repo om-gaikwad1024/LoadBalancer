@@ -22,6 +22,9 @@ json good_config() {
         "max_response_header_bytes": 65536, "max_response_header_count": 200, "max_chunk_line_bytes": 4096,
         "max_client_connections": 10000 },
       "buffers": { "client_read_bytes": 16384, "backend_read_bytes": 8192 },
+      "pool": { "max_connections_per_backend": 128, "max_idle_per_backend": 32, "idle_timeout_ms": 30000,
+                "max_waiters_per_backend": 500, "wait_timeout_ms": 1000 },
+      "maintenance": { "interval_ms": 250 },
       "timeouts": { "shutdown_grace_ms": 5000 },
       "groups": [
         { "name": "web", "backends": [
@@ -103,6 +106,12 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.buffers.client_read_bytes, 16384u);
     EXPECT_EQ(c.buffers.backend_read_bytes, 8192u);
     EXPECT_EQ(c.timeouts.shutdown_grace_ms, 5000u);
+    EXPECT_EQ(c.pool.max_connections_per_backend, 128u);
+    EXPECT_EQ(c.pool.max_idle_per_backend, 32u);
+    EXPECT_EQ(c.pool.idle_timeout_ms, 30000u);
+    EXPECT_EQ(c.pool.max_waiters_per_backend, 500u);
+    EXPECT_EQ(c.pool.wait_timeout_ms, 1000u);
+    EXPECT_EQ(c.maintenance.interval_ms, 250u);
     ASSERT_EQ(c.groups.size(), 2u);
     EXPECT_EQ(c.groups[0].name, "web");
     ASSERT_EQ(c.groups[0].backends.size(), 2u);
@@ -234,7 +243,13 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/listen/pending_accepts", 1025, "between 1 and 1024"},
     BadValueCase{"/buffers/client_read_bytes", 1023, "between 1024 and 1048576"},
     BadValueCase{"/buffers/backend_read_bytes", 1048577, "between 1024 and 1048576"},
-    BadValueCase{"/timeouts/shutdown_grace_ms", 600001, "between 0 and 600000"}), bad_value_name);
+    BadValueCase{"/timeouts/shutdown_grace_ms", 600001, "between 0 and 600000"},
+    BadValueCase{"/pool/max_connections_per_backend", 0, "between 1 and 65535"},
+    BadValueCase{"/pool/max_idle_per_backend", 129, "must not exceed max_connections_per_backend"},
+    BadValueCase{"/pool/idle_timeout_ms", 0, "between 1 and 3600000"},
+    BadValueCase{"/pool/max_waiters_per_backend", 1000001, "between 0 and 1000000"},
+    BadValueCase{"/pool/wait_timeout_ms", 0, "between 1 and 600000"},
+    BadValueCase{"/maintenance/interval_ms", 9, "between 10 and 60000"}), bad_value_name);
 
 INSTANTIATE_TEST_SUITE_P(BadAddress, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/listen/address", "localhost", "IPv4 address literal"},

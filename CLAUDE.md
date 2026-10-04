@@ -2,7 +2,7 @@
 
 HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Reference: `docs/plan.md` (section numbers below point into it).
 
-**Current step:** 1.4 done — next: 1.5 (waiting for review/commit)
+**Current step:** 1.5 done — next: 1.6 (waiting for review/commit)
 
 ## Rules
 - Read only the `docs/plan.md` sections listed for the current step. Never read the whole plan again, and never re-read the PDF.
@@ -39,7 +39,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 - [x] 1.2 HTTP/1.1 parser: limits, chunked, strict framing / smuggling defense (IV.3, VII)
 - [x] 1.3 Mock backend with all fault switches (IX)
 - [x] 1.4 IOCP listener, worker pool, per-request state machine → single backend (II.2, IV.1, IV.18)
-- [ ] 1.5 Backend registry + connection pool (IV.4, IV.5)
+- [x] 1.5 Backend registry + connection pool (IV.4, IV.5)
 - [ ] 1.6 Forwarding headers, X-Request-Id, all timeouts (IV.6, VI)
 - [ ] 1.7 Round robin + least connections (IV.7)
 - [ ] 1.8 Active health checks with hysteresis (IV.10)

@@ -89,8 +89,8 @@ void append_backend_request_head(std::string& out, const http::RequestHead& requ
     } else if (request.framing == http::BodyFraming::ContentLength) {
         append_field(out, "Content-Length", std::to_string(request.content_length));
     }
-    // Step 1.4: one backend connection per request. Step 1.5 (connection pool) keeps it alive.
-    append_field(out, "Connection", "close");
+    // No Connection header: HTTP/1.1 keep-alive is the default, and the pool reuses the
+    // connection once the response is fully read (plan IV.5).
     out.append("\r\n");
 }
 

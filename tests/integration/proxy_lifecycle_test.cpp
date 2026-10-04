@@ -209,6 +209,13 @@ TEST(ProxyLifecycle, BindConflictIsReported) {
     EXPECT_NE(error.find("bind"), std::string::npos) << error;
 }
 
+TEST(ProxyLifecycle, StartWithoutAConfigFailsCleanly) {
+    lb::Engine engine(nullptr);
+    std::string error;
+    EXPECT_FALSE(engine.start(&error));
+    EXPECT_NE(error.find("no configuration"), std::string::npos) << error;
+}
+
 TEST(ProxyLifecycle, AutoWorkerCountIsOnePerLogicalProcessor) {
     lb::Engine engine(lbtest::make_proxy_config({9}, [](nlohmann::json& j) { j["workers"]["threads"] = "auto"; }));
     std::string error;

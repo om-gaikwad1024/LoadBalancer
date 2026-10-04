@@ -21,6 +21,16 @@
     "client_read_bytes": 16384,
     "backend_read_bytes": 16384
   },
+  "pool": {
+    "max_connections_per_backend": 256,
+    "max_idle_per_backend": 64,
+    "idle_timeout_ms": 30000,
+    "max_waiters_per_backend": 1024,
+    "wait_timeout_ms": 1000
+  },
+  "maintenance": {
+    "interval_ms": 500
+  },
   "timeouts": {
     "shutdown_grace_ms": 10000
   },
