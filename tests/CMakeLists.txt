@@ -18,11 +18,16 @@ gtest_discover_tests(lb_unit_tests DISCOVERY_MODE PRE_TEST NO_PRETTY_VALUES PROP
 
 # Integration tests: engine + in-process mock backends on ephemeral ports (plan IX "Integration").
 add_executable(lb_integration_tests
-  integration/mock_backend_smoke_test.cpp
+  integration/test_http_client.h
+  integration/test_process.h
+  integration/mock_backend_test.cpp
 )
 target_link_libraries(lb_integration_tests PRIVATE lb_engine mock_backend_lib GTest::gtest GTest::gtest_main)
 lb_set_project_options(lb_integration_tests)
-target_compile_definitions(lb_integration_tests PRIVATE WIN32_LEAN_AND_MEAN)
+target_compile_definitions(lb_integration_tests PRIVATE
+  WIN32_LEAN_AND_MEAN
+  LB_MOCK_BACKEND_EXE=L"$<TARGET_FILE:mock_backend>")
+add_dependencies(lb_integration_tests mock_backend)
 gtest_discover_tests(lb_integration_tests DISCOVERY_MODE PRE_TEST NO_PRETTY_VALUES PROPERTIES LABELS integration)
 
 # Parser fuzz target (plan IX). Run with: tools\build.cmd fuzz all [seconds]
