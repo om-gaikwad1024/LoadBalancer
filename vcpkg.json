@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "loadbalancer",
+  "version-string": "0.1.0",
+  "description": "HTTP/1.1 load balancer and reverse proxy (C++20, Winsock IOCP, MFC dashboard)",
+  "builtin-baseline": "5dd2e1600d049b498ff9fb9fe15997533ae0c804",
+  "dependencies": [
+    "nlohmann-json",
+    "gtest"
+  ],
+  "features": {
+    "tls": {
+      "description": "HTTPS termination with OpenSSL (phase 4)",
+      "dependencies": [
+        "openssl"
+      ]
+    }
+  }
+}

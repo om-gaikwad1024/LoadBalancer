@@ -1,0 +1,15 @@
+# Build trees (one per CMake preset)
+/build/
+/out/
+vcpkg_installed/
+
+# IDE
+/.vs/
+CMakeUserPresets.json
+*.user
+*.aps
+
+# Runtime output
+/logs/
+*.jsonl
+k6-results/
