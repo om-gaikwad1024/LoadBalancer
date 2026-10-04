@@ -1,6 +1,10 @@
 add_library(lb_engine STATIC
   core/clock.h
   core/no_mfc_guard.h
+  config/config.h
+  config/config_loader.h
+  config/config_loader.cpp
+  config/config_store.h
   engine.h
   engine.cpp
 )

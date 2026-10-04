@@ -2,7 +2,7 @@
 
 HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Reference: `docs/plan.md` (section numbers below point into it).
 
-**Current step:** 1.0 done — next: 1.1 (waiting for review/commit)
+**Current step:** 1.1 done — next: 1.2 (waiting for review/commit)
 
 ## Rules
 - Read only the `docs/plan.md` sections listed for the current step. Never read the whole plan again, and never re-read the PDF.
@@ -14,7 +14,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 - The mock backend keeps its **own** small HTTP parser (never links the engine parser), thread per connection, blocking Winsock.
 - k6 scripts use the constant-arrival-rate executor only.
 - `docs/benchmarks.md` holds real measurements only, never estimates. Measure the mock backend's own limit before using it as a baseline.
-- A step is done only when its plan "Done means" is covered by a passing test. End each step with exact verify-it-yourself commands, then stop for review/commit. Phases 3–4 only when the user says so.
+- A step is done only when its plan "Done means" is covered by a passing test. End each step with exact verify-it-yourself commands and a one-line commit message, then stop for review/commit. Phases 3–4 only when the user says so.
 - Build and test **only** via `tools\build.cmd [debug|release] [configure|build|test|all] [ctest args]` (sets vcpkg env + vcvars64, Ninja presets). If a tool can't be found, show the exact command and output instead of guessing.
 
 ## Folder map
@@ -26,14 +26,14 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 | `tests/corpus/`, `tests/fuzz/` | malformed/smuggling inputs; parser fuzz target (from 1.2) |
 | `tools/mock_backend/` | `mock_backend_lib` + `mock_backend.exe` (plan IX) |
 | `tools/k6/`, `tools/scripts/` | load scripts; soak/kill/drain scripts (from 1.11) |
-| `config/` | complete example configs (from 1.1) |
+| `config/` | complete example configs; `lb.example.json` must stay valid (unit test loads it) |
 | `docs/` | `plan.md`, original PDF, `benchmarks.md`, `config-reference.md` |
 | `cmake/`, `CMakePresets.json`, `vcpkg.json` | build setup (presets `debug`, `release`; triplet x64-windows) |
 
 ## Checklist
 ### Phase 1 — Core proxy
 - [x] 1.0 Scaffold: CMake + vcpkg, engine lib, empty MFC dialog, tests, mock skeleton, plan → `docs/plan.md`
-- [ ] 1.1 Config load + validation → immutable snapshot in `std::atomic<std::shared_ptr>` (II.4, II.7, IV.14 load only)
+- [x] 1.1 Config load + validation → immutable snapshot in `std::atomic<std::shared_ptr>` (II.4, II.7, IV.14 load only)
 - [ ] 1.2 HTTP/1.1 parser: limits, chunked, strict framing / smuggling defense (IV.3, VII)
 - [ ] 1.3 Mock backend with all fault switches (IX)
 - [ ] 1.4 IOCP listener, worker pool, per-request state machine → single backend (II.2, IV.1, IV.18)
