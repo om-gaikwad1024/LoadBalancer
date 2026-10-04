@@ -2,7 +2,7 @@
 
 HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Reference: `docs/plan.md` (section numbers below point into it).
 
-**Current step:** 1.1 done — next: 1.2 (waiting for review/commit)
+**Current step:** 1.2 done — next: 1.3 (waiting for review/commit)
 
 ## Rules
 - Read only the `docs/plan.md` sections listed for the current step. Never read the whole plan again, and never re-read the PDF.
@@ -23,18 +23,18 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 | `src/engine/` | `lb_engine` static lib: core, config, http, net, proxy, backend, balance, health, metrics, log |
 | `src/app/` | `LoadBalancer.exe` MFC dialog app (shell, dashboard, admin) |
 | `tests/unit/`, `tests/integration/` | `lb_unit_tests`, `lb_integration_tests` (GoogleTest, labels `unit`/`integration`) |
-| `tests/corpus/`, `tests/fuzz/` | malformed/smuggling inputs; parser fuzz target (from 1.2) |
+| `tests/corpus/`, `tests/fuzz/` | escaped reject corpus `<status>_<name>.txt`; parser fuzz target (`tools\build.cmd fuzz all [seconds]`) |
 | `tools/mock_backend/` | `mock_backend_lib` + `mock_backend.exe` (plan IX) |
 | `tools/k6/`, `tools/scripts/` | load scripts; soak/kill/drain scripts (from 1.11) |
 | `config/` | complete example configs; `lb.example.json` must stay valid (unit test loads it) |
 | `docs/` | `plan.md`, original PDF, `benchmarks.md`, `config-reference.md` |
-| `cmake/`, `CMakePresets.json`, `vcpkg.json` | build setup (presets `debug`, `release`; triplet x64-windows) |
+| `cmake/`, `CMakePresets.json`, `vcpkg.json` | build setup (presets `debug`, `release`, `fuzz`; triplet x64-windows) |
 
 ## Checklist
 ### Phase 1 — Core proxy
 - [x] 1.0 Scaffold: CMake + vcpkg, engine lib, empty MFC dialog, tests, mock skeleton, plan → `docs/plan.md`
 - [x] 1.1 Config load + validation → immutable snapshot in `std::atomic<std::shared_ptr>` (II.4, II.7, IV.14 load only)
-- [ ] 1.2 HTTP/1.1 parser: limits, chunked, strict framing / smuggling defense (IV.3, VII)
+- [x] 1.2 HTTP/1.1 parser: limits, chunked, strict framing / smuggling defense (IV.3, VII)
 - [ ] 1.3 Mock backend with all fault switches (IX)
 - [ ] 1.4 IOCP listener, worker pool, per-request state machine → single backend (II.2, IV.1, IV.18)
 - [ ] 1.5 Backend registry + connection pool (IV.4, IV.5)

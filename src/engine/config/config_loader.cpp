@@ -39,6 +39,12 @@ constexpr std::uint64_t kMaxWorkerThreads = 256;
 constexpr std::uint64_t kMinWeight = 1;
 constexpr std::uint64_t kMaxWeight = 1000;
 constexpr std::size_t kMaxNameLength = 64;
+constexpr std::uint64_t kMinRequestLineBytes = 64;
+constexpr std::uint64_t kMinHeaderBytes = 256;
+constexpr std::uint64_t kMaxHeaderBytes = 1024 * 1024;
+constexpr std::uint64_t kMaxHeaderCount = 10000;
+constexpr std::uint64_t kMinChunkLineBytes = 16;
+constexpr std::uint64_t kMaxChunkLineBytes = 64 * 1024;
 constexpr std::string_view kAutoThreads = "auto";
 constexpr std::string_view kAnyAddress = "0.0.0.0";
 
@@ -233,6 +239,27 @@ void build_workers(const json& root, Validator& v, ConfigSnapshot& out) {
     }
 }
 
+void build_limits(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/limits";
+    const json* j = Validator::field(root, "limits");
+    if (j == nullptr || !v.check_object(*j, path,
+                                        {"max_request_line_bytes", "max_request_header_bytes",
+                                         "max_request_header_count", "max_response_header_bytes",
+                                         "max_response_header_count", "max_chunk_line_bytes"})) {
+        return;
+    }
+    const auto set = [&](std::string_view key, std::uint64_t min, std::uint64_t max, std::uint32_t& field) {
+        if (auto value = v.get_uint(*j, path, key, min, max)) field = static_cast<std::uint32_t>(*value);
+    };
+    LimitsConfig& l = out.limits;
+    set("max_request_line_bytes", kMinRequestLineBytes, kMaxHeaderBytes, l.max_request_line_bytes);
+    set("max_request_header_bytes", kMinHeaderBytes, kMaxHeaderBytes, l.max_request_header_bytes);
+    set("max_request_header_count", 1, kMaxHeaderCount, l.max_request_header_count);
+    set("max_response_header_bytes", kMinHeaderBytes, kMaxHeaderBytes, l.max_response_header_bytes);
+    set("max_response_header_count", 1, kMaxHeaderCount, l.max_response_header_count);
+    set("max_chunk_line_bytes", kMinChunkLineBytes, kMaxChunkLineBytes, l.max_chunk_line_bytes);
+}
+
 // Returns true when the groups section is fully valid (routing checks depend on it).
 bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
     const std::string path = "/groups";
@@ -336,9 +363,10 @@ ConfigLoadResult parse_config(std::string_view json_text) {
     for (const auto& path : duplicates.duplicates()) v.error(path, "duplicate key");
 
     auto snapshot = std::make_shared<ConfigSnapshot>();
-    if (v.check_object(root, "", {"listen", "workers", "groups", "routing"})) {
+    if (v.check_object(root, "", {"listen", "workers", "limits", "groups", "routing"})) {
         build_listen(root, v, *snapshot);
         build_workers(root, v, *snapshot);
+        build_limits(root, v, *snapshot);
         const bool groups_valid = build_groups(root, v, *snapshot);
         build_routing(root, v, *snapshot, groups_valid);
     }

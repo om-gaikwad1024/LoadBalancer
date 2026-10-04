@@ -17,6 +17,9 @@ json good_config() {
     return json::parse(R"({
       "listen":  { "address": "0.0.0.0", "port": 8080 },
       "workers": { "threads": 4 },
+      "limits": {
+        "max_request_line_bytes": 8192, "max_request_header_bytes": 32768, "max_request_header_count": 100,
+        "max_response_header_bytes": 65536, "max_response_header_count": 200, "max_chunk_line_bytes": 4096 },
       "groups": [
         { "name": "web", "backends": [
             { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 3 },
@@ -85,6 +88,12 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.listen.port, 8080);
     ASSERT_TRUE(c.workers.threads.has_value());
     EXPECT_EQ(*c.workers.threads, 4u);
+    EXPECT_EQ(c.limits.max_request_line_bytes, 8192u);
+    EXPECT_EQ(c.limits.max_request_header_bytes, 32768u);
+    EXPECT_EQ(c.limits.max_request_header_count, 100u);
+    EXPECT_EQ(c.limits.max_response_header_bytes, 65536u);
+    EXPECT_EQ(c.limits.max_response_header_count, 200u);
+    EXPECT_EQ(c.limits.max_chunk_line_bytes, 4096u);
     ASSERT_EQ(c.groups.size(), 2u);
     EXPECT_EQ(c.groups[0].name, "web");
     ASSERT_EQ(c.groups[0].backends.size(), 2u);
@@ -204,7 +213,13 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/workers/threads", 0, "between 1 and 256"},
     BadValueCase{"/workers/threads", 257, "between 1 and 256"},
     BadValueCase{"/groups/0/backends/0/weight", 0, "between 1 and 1000"},
-    BadValueCase{"/groups/0/backends/0/weight", 1001, "between 1 and 1000"}), bad_value_name);
+    BadValueCase{"/groups/0/backends/0/weight", 1001, "between 1 and 1000"},
+    BadValueCase{"/limits/max_request_line_bytes", 63, "between 64 and 1048576"},
+    BadValueCase{"/limits/max_request_header_bytes", 1048577, "between 256 and 1048576"},
+    BadValueCase{"/limits/max_request_header_count", 0, "between 1 and 10000"},
+    BadValueCase{"/limits/max_response_header_bytes", 255, "between 256 and 1048576"},
+    BadValueCase{"/limits/max_response_header_count", 10001, "between 1 and 10000"},
+    BadValueCase{"/limits/max_chunk_line_bytes", 15, "between 16 and 65536"}), bad_value_name);
 
 INSTANTIATE_TEST_SUITE_P(BadAddress, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/listen/address", "localhost", "IPv4 address literal"},

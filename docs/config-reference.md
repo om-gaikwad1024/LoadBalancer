@@ -26,6 +26,19 @@ Example: [`config/lb.example.json`](../config/lb.example.json).
 |---|---|---|---|
 | `workers.threads` | integer or `"auto"` | 1–256, or exactly `"auto"` | Fixed number of IOCP worker threads created at startup. `"auto"` = one per logical processor |
 
+## `limits`: HTTP parser input limits (plan IV.3, VII)
+Requests over a limit are rejected before any routing. A backend response over its limits is
+treated as a bad response (502) and that backend connection is never reused.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `limits.max_request_line_bytes` | integer | 64–1048576 | Longest request line (method, target, version), excluding CRLF. Over it: **400** |
+| `limits.max_request_header_bytes` | integer | 256–1048576 | Total size of request header field lines including their CRLFs, excluding the request line. Over it: **431**. Also caps the chunked-body trailer section |
+| `limits.max_request_header_count` | integer | 1–10000 | Most header fields in one request. Over it: **431**. Also caps trailer fields |
+| `limits.max_response_header_bytes` | integer | 256–1048576 | Largest whole response head (status line, header fields, final empty line). Over it: **502** |
+| `limits.max_response_header_count` | integer | 1–10000 | Most header fields in one response. Over it: **502** |
+| `limits.max_chunk_line_bytes` | integer | 16–65536 | Longest chunk-size line (hex size plus chunk extensions), excluding CRLF, in either direction. Over it: 400 (request) or 502 (response) |
+
 ## `groups`: backend groups (plan IV.4, IV.7)
 `groups` is a non-empty array. Each group:
 

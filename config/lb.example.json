@@ -6,6 +6,14 @@
   "workers": {
     "threads": "auto"
   },
+  "limits": {
+    "max_request_line_bytes": 8192,
+    "max_request_header_bytes": 32768,
+    "max_request_header_count": 100,
+    "max_response_header_bytes": 65536,
+    "max_response_header_count": 200,
+    "max_chunk_line_bytes": 4096
+  },
   "groups": [
     {
       "name": "web",

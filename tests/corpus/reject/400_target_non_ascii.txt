@@ -1,0 +1,3 @@
+GET /caf\xc3\xa9 HTTP/1.1\r\n
+Host: a\r\n
+\r\n

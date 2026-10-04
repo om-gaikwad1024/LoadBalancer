@@ -1,7 +1,8 @@
 @echo off
 rem Single build/test entry point. Usage: tools\build.cmd [preset] [configure^|build^|test^|all] [extra ctest args...]
-rem   preset: debug (default) ^| release
+rem   preset: debug (default) ^| release ^| fuzz
 rem   action: all (default) = configure + build + test
+rem   fuzz preset: "test" runs the parser fuzzer; extra arg = seconds, e.g. tools\build.cmd fuzz all 120
 setlocal EnableExtensions
 
 rem Capture the repo root before any shift (shift also moves %0).
@@ -61,7 +62,19 @@ if errorlevel 1 exit /b 1
 if /i "%ACTION%"=="build" exit /b 0
 
 :test
+if /i "%PRESET%"=="fuzz" goto fuzz
 echo [build.cmd] ctest --preset %PRESET%%CTEST_EXTRA%
 ctest --preset %PRESET%%CTEST_EXTRA%
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:fuzz
+rem For the fuzz preset the "test" step runs the parser fuzzer; the extra argument is seconds (default 60).
+set "FUZZ_SECONDS=60"
+for /f %%s in ("%CTEST_EXTRA%") do set "FUZZ_SECONDS=%%s"
+echo [build.cmd] fuzzing lb_parser_fuzz for %FUZZ_SECONDS% s
+powershell -NoProfile -ExecutionPolicy Bypass -File "%REPO_ROOT%\tools\fuzz.ps1" ^
+  -Exe "%REPO_ROOT%\build\fuzz\tests\lb_parser_fuzz.exe" -Seconds %FUZZ_SECONDS% ^
+  -WorkDir "%REPO_ROOT%\build\fuzz\run" -CorpusDir "%REPO_ROOT%\tests\corpus\reject"
 if errorlevel 1 exit /b 1
 exit /b 0

@@ -1,0 +1,4 @@
+GET / HTTP/1.1\r\n
+Host: a\r\n
+Host: b\r\n
+\r\n

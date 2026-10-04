@@ -27,11 +27,18 @@
       "displayName": "x64 RelWithDebInfo (benchmarks)",
       "inherits": "base",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "x64 parser fuzzing (ASan + libFuzzer)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "LB_BUILD_FUZZ": "ON" }
     }
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
-    { "name": "release", "configurePreset": "release" }
+    { "name": "release", "configurePreset": "release" },
+    { "name": "fuzz", "configurePreset": "fuzz", "targets": [ "lb_parser_fuzz" ] }
   ],
   "testPresets": [
     {

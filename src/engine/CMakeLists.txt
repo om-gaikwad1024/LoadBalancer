@@ -5,6 +5,9 @@ add_library(lb_engine STATIC
   config/config_loader.h
   config/config_loader.cpp
   config/config_store.h
+  http/http_message.h
+  http/http_parser.h
+  http/http_parser.cpp
   engine.h
   engine.cpp
 )
