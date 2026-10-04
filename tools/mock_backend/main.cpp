@@ -1,6 +1,7 @@
 #include "mock_server.h"
 
 #include <windows.h>
+#include <timeapi.h>
 
 #include <charconv>
 #include <cstdio>
@@ -75,6 +76,10 @@ int main(int argc, char** argv) {
     }
     if (!have_port) return usage("--port is required");
 
+    // Latency injection sleeps; with the default ~15.6 ms timer tick a 2 ms sleep takes ~10 ms.
+    // A 1 ms tick makes --latency-ms accurate (this is a test tool; the proxy never sleeps).
+    ::timeBeginPeriod(1);
+
     mock::MockServer server(options);
     std::string error;
     if (!server.start(&error)) {
@@ -91,5 +96,6 @@ int main(int argc, char** argv) {
 
     server.stop();
     ::CloseHandle(g_stop_event);
+    ::timeEndPeriod(1);
     return 0;
 }

@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -195,9 +196,16 @@ TEST(ConfigLoader, Utf8BomIsAccepted) {
     EXPECT_TRUE(r.ok()) << describe(r);
 }
 
-TEST(ConfigLoader, ShippedExampleConfigIsValid) {
-    const auto r = lb::load_config_file(LB_SOURCE_DIR "/config/lb.example.json");
-    EXPECT_TRUE(r.ok()) << describe(r);
+TEST(ConfigLoader, EveryShippedConfigIsValid) {
+    int checked = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(LB_SOURCE_DIR "/config")) {
+        if (entry.path().extension() != ".json") continue;
+        SCOPED_TRACE(entry.path().filename().string());
+        const auto r = lb::load_config_file(entry.path());
+        EXPECT_TRUE(r.ok()) << describe(r);
+        ++checked;
+    }
+    EXPECT_GE(checked, 4);  // example, bench, killtest, soak
 }
 
 // ---- Rejects each class of bad config (plan IX "Unit": config validation) ------------

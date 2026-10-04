@@ -10,6 +10,6 @@ lb_set_project_options(mock_backend_lib)
 target_compile_definitions(mock_backend_lib PRIVATE WIN32_LEAN_AND_MEAN)
 
 add_executable(mock_backend main.cpp)
-target_link_libraries(mock_backend PRIVATE mock_backend_lib)
+target_link_libraries(mock_backend PRIVATE mock_backend_lib winmm)
 lb_set_project_options(mock_backend)
 target_compile_definitions(mock_backend PRIVATE WIN32_LEAN_AND_MEAN)

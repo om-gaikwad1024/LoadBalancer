@@ -2,7 +2,7 @@
 
 HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Reference: `docs/plan.md` (section numbers below point into it).
 
-**Current step:** 1.10 done — next: 1.11 gate (waiting for review/commit)
+**Current step:** Phase 1 complete (1.11 gate passed) — next: 2.1 hot reload (waiting for review/commit)
 
 ## Rules
 - Read only the `docs/plan.md` sections listed for the current step. Never read the whole plan again, and never re-read the PDF.
@@ -27,7 +27,8 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 | `tools/lb_console/` | `lb_console.exe --config <file>`: headless engine host for load/soak runs |
 | `tools/mock_backend/` | `mock_backend_lib` + `mock_backend.exe` (plan IX); switches and `/__mock/*` control in its README |
 | `tests/integration/test_*.h` | test HTTP client (own reader) and child-process helper for kill tests |
-| `tools/k6/`, `tools/scripts/` | load scripts; soak/kill/drain scripts (from 1.11) |
+| `tools/k6/` | `constant_rate.js`, `soak.js` (constant-arrival-rate only) |
+| `tools/scripts/` | `bench.ps1`, `kill_test.ps1`, `soak.ps1` (+ `common.ps1`); results in `build\gate\<name>-<time>\results.json`; configs `config/bench.json`, `killtest.json`, `soak.json` |
 | `config/` | complete example configs; `lb.example.json` must stay valid (unit test loads it) |
 | `docs/` | `plan.md`, original PDF, `benchmarks.md`, `config-reference.md` |
 | `cmake/`, `CMakePresets.json`, `vcpkg.json` | build setup (presets `debug`, `release`, `asan` = all tests under ASan, `fuzz`; triplet x64-windows) |
@@ -45,7 +46,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 - [x] 1.8 Active health checks with hysteresis (IV.10)
 - [x] 1.9 Per-thread latency histograms + JSON-lines event log writer (IV.15, IV.16, V)
 - [x] 1.10 MFC dashboard, phase 1 (IV.17)
-- [ ] 1.11 Gate: k6 benchmark, backend-kill test, soak with no handle/memory growth (I, IX, X)
+- [x] 1.11 Gate: k6 benchmark, backend-kill test, soak with no handle/memory growth (I, IX, X)
 ### Phase 2 — Smart routing and live operations
 - [ ] 2.1 Hot reload: watcher + debounce, validate-then-swap, content hash (IV.14)
 - [ ] 2.2 Weighted RR, least response time (EWMA), IP hash (IV.7)

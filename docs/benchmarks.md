@@ -1,16 +1,96 @@
 # Benchmarks
 
-Real measurements only (plan X). No estimates, no placeholders filled with guesses.
-Each result records hardware, OS, whether k6 / proxy / backends share a machine, warm-up,
-and is the median of at least three runs.
+Real measurements only (plan X); no estimates. Each figure comes from a run of the scripts
+in `tools/scripts/`, whose raw output (k6 summaries, per-request CSV, proxy metrics dumps,
+event logs, samples) is kept under `build\gate\<name>-<timestamp>\`. Medians are over 3 runs
+after a warm-up, unless a row says otherwise.
 
 ## Environment
 | Item | Value |
 |---|---|
-| CPU | Intel Core i5-1135G7 (4 cores / 8 threads) |
+| CPU | Intel Core i5-1135G7 @ 2.40 GHz, 4 cores / 8 threads |
 | RAM | 7.7 GB |
-| OS | Windows 11 Home 10.0.26200 |
-| Topology | k6, proxy and mock backends all on the same machine (they compete for CPU) |
+| OS | Windows 11 Home Single Language 10.0.26200 |
+| Build | `release` preset (MSVC 14.51, RelWithDebInfo), proxy run headless as `lb_console.exe` |
+| Proxy config | `config/bench.json`: 8 IOCP workers (`auto`), 3 backends, round robin, 30 s metrics window |
+| Load generator | k6 v2.2.0, **constant-arrival-rate** executor only (open model, no coordinated omission) |
+| Topology | k6, the proxy and 3 mock backends **all on the same laptop**: they compete for the same 8 logical CPUs |
+| Date | 2026-10-04 |
 
-## Results
-_None yet. The first entries are the mock backend's standalone limit (step 1.3/1.11) and the phase 1 gate (step 1.11)._
+**Measurement limits on this machine**
+- **k6 can't resolve sub-millisecond latency here.** For the zero-delay mock on loopback, k6 reports most requests as 0 ms (p50 = 0). Its latencies are only used where the backend adds a fixed 5 ms delay. The proxy's own histograms (microsecond resolution, ≤1.6% bucket error) give the sub-millisecond numbers.
+- **The load generator, not the proxy, sets the throughput ceiling.** k6 drops iterations at 4,000–6,000 req/s even when it talks to a single mock directly with no proxy involved, and where that happens varies from run to run (see the mock baseline).
+- **Mock delays need a 1 ms timer.** The mock requests 1 ms resolution (`timeBeginPeriod(1)`), so a 5 ms delay measures about 5.3 ms.
+
+## Phase 1 gate (step 1.11)
+
+### Mock backend baseline (measured before use as the direct-to-backend reference)
+Pass rule: no failed requests, ≤0.1% dropped iterations, achieved rate ≥98% of target, p99 ≤ 10 ms. One 15 s run per rate, one mock instance, no proxy.
+
+| Search run | Highest passing rate | First failing rate (reason) |
+|---|---|---|
+| bench-20261004-210717 (the run reported below) | **3,500 req/s** | 4,000 req/s (81 dropped iterations; p99 0.52 ms, 0 errors) |
+| earlier run, same day | 6,000 req/s | not reached |
+
+The mock never failed a request and its p99 stayed under 1 ms. Each failure was k6 dropping iterations, so the measured mock "limit" is really the load generator's limit on this machine. The overhead tests below run at 1,000 req/s, well under every measured limit.
+
+### Throughput
+Highest constant-arrival rate with p99 ≤ **10 ms**, no failed requests, and ≤0.1% dropped iterations. A coarse search (15 s per rate: 1,000 → 6,000) found 5,000 req/s passing and 6,000 req/s failing (5,014 dropped iterations, 0 errors). 5,000 req/s was then run 3 × 30 s:
+
+| Run | Achieved | k6 p99 | k6 max | Dropped | Proxy total p50 / p95 / p99 / max | Proxy backend-only p50 / p99 |
+|---|---|---|---|---|---|---|
+| 1 | 4,934.9/s | 3.01 ms | 430.3 ms | 1,952 | 0.133 / 0.199 / 0.395 / 18.2 ms | 0.113 / 0.335 ms |
+| 2 | 5,000.0/s | 0.64 ms | 22.6 ms | 0 | 0.114 / 0.165 / 0.245 / 8.2 ms | 0.098 / 0.197 ms |
+| 3 | 4,999.8/s | 0.40 ms | 17.3 ms | 0 | 0.110 / 0.141 / 0.169 / 14.8 ms | 0.095 / 0.141 ms |
+| **Median** | **4,999.8/s** | **0.64 ms** | **22.6 ms** | | **0.114 / 0.165 / 0.245 / 14.8 ms** | **0.098 / 0.197 ms** |
+
+0 failed requests in every run. In run 1, k6 saw a 430 ms stall and dropped 1,952 iterations, while the proxy's own max over the same window was 18 ms. The stall happened outside the proxy (in the load generator or OS scheduling on the shared CPUs). **The proxy sustains at least 5,000 req/s at sub-millisecond p99; this setup can't drive it harder.**
+
+### Proxy overhead and tail latency (backends add a fixed 5 ms)
+Same rate, 1,000 req/s, 3 × 30 s each: directly to one mock, then through the proxy to 3 mocks.
+
+| | p50 | p95 | p99 | max |
+|---|---|---|---|---|
+| k6 → mock directly (median) | 5.359 ms | 6.294 ms | 6.571 ms | 9.44 ms |
+| k6 → proxy → mock (median) | 5.325 ms | 6.310 ms | 6.488 ms | 10.25 ms |
+| **Overhead seen by k6** | **−0.034 ms** | +0.016 ms | **−0.083 ms** | |
+| Proxy's own measurement of the same runs | 5.375 ms | 6.335 ms | 6.527 ms | 9.74 ms |
+
+- **Proxy overhead is below what k6 can resolve at this latency:** the medians differ by less than run-to-run noise. The proxy's own histograms isolate it: at 5,000 req/s, total p50 0.114 ms against backend-only 0.098 ms, so about **16 µs at p50** and about **48 µs at p99** (0.245 against 0.197 ms). Percentiles of two series don't subtract exactly; this is an indication, not an exact figure.
+- **The proxy's percentiles agree with k6's:** p50 +0.9%, p95 +0.4%, p99 +0.6%, max −5%. That's within the histogram's ≤1.6% bucket error (it reports bucket upper bounds) plus the client-side time k6 adds.
+
+### Connection reuse
+Over the whole throughput run: 872,603 requests through **167 new backend connections**, i.e. **5,225 requests per backend connection**.
+
+### Failover: backend kill under load
+`kill_test.ps1`: 500 req/s for 40 s through `config/killtest.json` (probes every 500 ms, timeout 250 ms, N = 3, M = 2, so the detection window is 1,750 ms). Backend `web-2` is a real process, hard-killed (TerminateProcess) at +10 s and restarted at +25 s. Kill and restart times come from the script, exclusion and re-inclusion times from the event log, and failures from k6's per-request CSV, all on one clock.
+
+| Run | Failover (kill → excluded) | Failed before kill | Failed kill → exclusion | **Failed after exclusion** | Re-included after restart |
+|---|---|---|---|---|---|
+| kill-20261004-211751 | 1,529 ms | 0 | 253 | **0** | 824 ms |
+| kill-20261004-211844 | 1,446 ms | 0 | 239 | **0** | 627 ms |
+| kill-20261004-211931 | 1,476 ms | 0 | 244 | **0** | 699 ms |
+| **Median** | **1,476 ms** | 0 | **244** | **0** | **699 ms** |
+
+- **Errors during failover are without retries.** Phase 1 has no retries, so the requests that round robin sends to the dead backend before exclusion fail with 502: about a third of 500 req/s over about 1.5 s. Each of them is also in the proxy's event log as `backend_error`, and the count matches k6's exactly (253 vs 253 in the first run). Retries come in phase 3.
+- **Exclusion reason:** "connect: 10061 (actively refused)". Refusals are detected immediately because of `pool.fail_fast_connect` and fail-fast probes.
+
+### Stability: soak
+`soak.ps1`: **30 minutes** through `config/soak.json`. Load was 1,000 req/s keep-alive plus 50 req/s with `Connection: close` (socket churn), both constant-arrival-rate. Every 2 minutes one backend's health endpoint failed for 3 s, marking it down and up (14 times). Pooled connections had a 2 s idle timeout. The proxy process was sampled every 10 s. Baseline = median of samples in minutes 2–3; end = median of the last 3 samples.
+
+| | Baseline | End | Change | Trend after warm-up |
+|---|---|---|---|---|
+| Handle count | 223 | 223 | **0** | −0.2 / hour |
+| Private bytes | 8.52 MB | 8.65 MB | **+0.13 MB** | +0.16 MB / hour |
+| Threads | 15 | 15 | **0** | |
+
+1,890,001 requests, **0 failed, 0 dropped iterations**, k6 p99 0.59 ms; 90,050 client connections and 771 backend connections opened; 14 marked down and 14 marked up; 0 event-log entries dropped. Over the whole run, handles stayed between 222 and 226 after warm-up, and private bytes between 8.63 and 8.66 MB.
+
+## How to reproduce
+Build first (`tools\build.cmd release all`), then from the repo root:
+```
+powershell -ExecutionPolicy Bypass -File tools\scripts\bench.ps1
+powershell -ExecutionPolicy Bypass -File tools\scripts\kill_test.ps1
+powershell -ExecutionPolicy Bypass -File tools\scripts\soak.ps1 -Minutes 30
+```
+Each script prints its results and writes `results.json` to its run directory. `kill_test.ps1` and `soak.ps1` exit with a non-zero code when the gate criterion fails.

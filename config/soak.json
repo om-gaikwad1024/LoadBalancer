@@ -1,0 +1,102 @@
+{
+    "listen":  {
+                   "address":  "127.0.0.1",
+                   "port":  8092,
+                   "backlog":  1024,
+                   "pending_accepts":  32
+               },
+    "workers":  {
+                    "threads":  "auto"
+                },
+    "limits":  {
+                   "max_request_line_bytes":  8192,
+                   "max_request_header_bytes":  32768,
+                   "max_request_header_count":  100,
+                   "max_response_header_bytes":  65536,
+                   "max_response_header_count":  200,
+                   "max_chunk_line_bytes":  4096,
+                   "max_client_connections":  10000
+               },
+    "buffers":  {
+                    "client_read_bytes":  16384,
+                    "backend_read_bytes":  16384
+                },
+    "pool":  {
+                 "max_connections_per_backend":  256,
+                 "max_idle_per_backend":  64,
+                 "idle_timeout_ms":  2000,
+                 "max_waiters_per_backend":  1024,
+                 "wait_timeout_ms":  1000,
+                 "fail_fast_connect":  true
+             },
+    "maintenance":  {
+                        "interval_ms":  500
+                    },
+    "metrics":  {
+                    "slice_ms":  1000,
+                    "window_slices":  10
+                },
+    "event_log":  {
+                      "path":  "logs/soak-events.jsonl",
+                      "max_file_bytes":  65536,
+                      "max_files":  3,
+                      "max_queue":  100000,
+                      "recent_events":  500,
+                      "trace_requests":  false
+                  },
+    "dashboard":  {
+                      "publish_interval_ms":  500,
+                      "event_rows":  500
+                  },
+    "timeouts":  {
+                     "client_header_ms":  10000,
+                     "client_body_idle_ms":  30000,
+                     "client_keepalive_idle_ms":  60000,
+                     "client_write_idle_ms":  30000,
+                     "backend_connect_ms":  3000,
+                     "backend_response_ms":  30000,
+                     "backend_idle_ms":  30000,
+                     "shutdown_grace_ms":  10000
+                 },
+    "trusted_proxies":  [
+
+                        ],
+    "groups":  [
+                   {
+                       "name":  "web",
+                       "strategy":  "round_robin",
+                       "host_header":  "preserve",
+                       "health":  {
+                                      "type":  "http",
+                                      "path":  "/health",
+                                      "interval_ms":  500,
+                                      "timeout_ms":  250,
+                                      "unhealthy_threshold":  3,
+                                      "healthy_threshold":  2
+                                  },
+                       "backends":  [
+                                        {
+                                            "id":  "web-1",
+                                            "address":  "127.0.0.1",
+                                            "port":  9301,
+                                            "weight":  1
+                                        },
+                                        {
+                                            "id":  "web-2",
+                                            "address":  "127.0.0.1",
+                                            "port":  9302,
+                                            "weight":  1
+                                        },
+                                        {
+                                            "id":  "web-3",
+                                            "address":  "127.0.0.1",
+                                            "port":  9303,
+                                            "weight":  1
+                                        }
+                                    ]
+                   }
+               ],
+    "routing":  {
+                    "default_group":  "web"
+                }
+}
