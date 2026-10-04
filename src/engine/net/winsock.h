@@ -35,6 +35,11 @@ SOCKET make_overlapped_tcp_socket() noexcept;
 
 void set_no_delay(SOCKET s) noexcept;
 
+// Windows retries a connect for about two seconds after the peer answers RST. Without SYN
+// retransmissions a refused connect fails at once; the cost is that a SYN lost on the
+// network also fails at once instead of being retried. Call before connect().
+void disable_syn_retransmissions(SOCKET s) noexcept;
+
 std::string wsa_error_text(int code);
 
 }  // namespace lb::net

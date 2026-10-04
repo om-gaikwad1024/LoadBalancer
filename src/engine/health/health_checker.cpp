@@ -1,7 +1,6 @@
 #include "health/health_checker.h"
 
 #include <ws2tcpip.h>
-#include <mstcpip.h>
 
 #include <algorithm>
 #include <chrono>
@@ -19,17 +18,6 @@ bool set_non_blocking(SOCKET s) noexcept {
     return ::ioctlsocket(s, FIONBIO, &on) == 0;
 }
 
-// Windows retries a connect for about a second after the peer answers RST, so a killed
-// backend would only show up as a probe timeout. Without SYN retransmissions a refused
-// probe fails at once; a SYN lost on the network is then one failed probe, which the
-// hysteresis absorbs. Probe sockets only: data-plane connects keep the default.
-void fail_fast_on_refusal(SOCKET s) noexcept {
-    TCP_INITIAL_RTO_PARAMETERS params{};
-    params.Rtt = TCP_INITIAL_RTO_UNSPECIFIED_RTT;
-    params.MaxSynRetransmissions = TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS;
-    DWORD bytes = 0;
-    ::WSAIoctl(s, SIO_TCP_INITIAL_RTO, &params, sizeof(params), nullptr, 0, &bytes, nullptr, nullptr);
-}
 
 // "HTTP/1.x NNN ..." -> NNN, or 0 if the line is not a status line.
 int parse_status(std::string_view line) noexcept {
@@ -156,7 +144,9 @@ void HealthChecker::begin(Probe& p, TimePoint now) {
         finish(p, false, "socket: " + net::wsa_error_text(::WSAGetLastError()));
         return;
     }
-    fail_fast_on_refusal(p.socket);
+    // Probes always fail fast: a killed backend must show up as refused, not as a probe
+    // timeout. A SYN lost on the network is one failed probe, which the hysteresis absorbs.
+    net::disable_syn_retransmissions(p.socket);
     p.phase = Phase::Connecting;
     const sockaddr_in& addr = p.backend->address;
     if (::connect(p.socket, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {

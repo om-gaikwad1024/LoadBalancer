@@ -274,7 +274,7 @@ void build_pool(const json& root, Validator& v, ConfigSnapshot& out) {
     const json* j = Validator::field(root, "pool");
     if (j == nullptr || !v.check_object(*j, path,
                                         {"max_connections_per_backend", "max_idle_per_backend", "idle_timeout_ms",
-                                         "max_waiters_per_backend", "wait_timeout_ms"})) {
+                                         "max_waiters_per_backend", "wait_timeout_ms", "fail_fast_connect"})) {
         return;
     }
     PoolConfig& p = out.pool;
@@ -286,6 +286,7 @@ void build_pool(const json& root, Validator& v, ConfigSnapshot& out) {
     set("idle_timeout_ms", 1, kMaxIdleTimeoutMs, p.idle_timeout_ms);
     set("max_waiters_per_backend", 0, kMaxPoolWaiters, p.max_waiters_per_backend);
     set("wait_timeout_ms", 1, kMaxTimeoutMs, p.wait_timeout_ms);
+    if (auto b = v.get_bool(*j, path, "fail_fast_connect")) p.fail_fast_connect = *b;
     if (p.max_connections_per_backend != 0 && p.max_idle_per_backend > p.max_connections_per_backend) {
         v.error(child(path, "max_idle_per_backend"), "must not exceed max_connections_per_backend");
     }

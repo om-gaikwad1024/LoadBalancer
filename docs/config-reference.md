@@ -67,6 +67,7 @@ are closed at once.
 | `pool.idle_timeout_ms` | integer | 1–3600000 | An idle pooled connection older than this is closed by the maintenance thread. Keep it below the backends' own keep-alive timeout |
 | `pool.max_waiters_per_backend` | integer | 0–1000000 | When a backend is at its cap, up to this many requests wait for a connection. Beyond it: **503** at once |
 | `pool.wait_timeout_ms` | integer | 1–600000 | A waiting request that gets no connection within this time: **503** |
+| `pool.fail_fast_connect` | boolean | `true` / `false` | `true` (recommended): a refused backend connect fails at once, with a **502** about 2 ms after a backend died. `false` keeps Windows' default of retrying the SYN after a refusal, which delays the 502 by about 2 s (measured: 2,039 ms). The cost of `true` is that a SYN lost on the network also fails at once instead of being retried; that's rare on a LAN, and `backend_connect_ms` still bounds every connect. Health probes always fail fast |
 
 ## `maintenance` (plan V)
 | Field | Type | Valid range | Meaning |

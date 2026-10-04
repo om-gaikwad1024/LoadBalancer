@@ -1,6 +1,7 @@
 #include "net/winsock.h"
 
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 
 namespace lb::net {
 
@@ -50,6 +51,14 @@ SOCKET make_overlapped_tcp_socket() noexcept {
 void set_no_delay(SOCKET s) noexcept {
     BOOL on = TRUE;
     ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&on), sizeof(on));
+}
+
+void disable_syn_retransmissions(SOCKET s) noexcept {
+    TCP_INITIAL_RTO_PARAMETERS params{};
+    params.Rtt = TCP_INITIAL_RTO_UNSPECIFIED_RTT;
+    params.MaxSynRetransmissions = TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS;
+    DWORD bytes = 0;
+    ::WSAIoctl(s, SIO_TCP_INITIAL_RTO, &params, sizeof(params), nullptr, 0, &bytes, nullptr, nullptr);
 }
 
 std::string wsa_error_text(int code) {

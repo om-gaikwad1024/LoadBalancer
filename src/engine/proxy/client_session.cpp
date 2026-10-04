@@ -361,6 +361,7 @@ bool ClientSession::start_backend_connect() {
         complete(Pending::BackendConnect, 0, static_cast<DWORD>(::WSAGetLastError()));
         return false;
     }
+    if (config_->pool.fail_fast_connect) net::disable_syn_retransmissions(backend_);
     sockaddr_in any{};
     any.sin_family = AF_INET;
     if (::bind(backend_, reinterpret_cast<sockaddr*>(&any), sizeof(any)) == SOCKET_ERROR) {

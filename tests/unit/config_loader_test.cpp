@@ -23,7 +23,7 @@ json good_config() {
         "max_client_connections": 10000 },
       "buffers": { "client_read_bytes": 16384, "backend_read_bytes": 8192 },
       "pool": { "max_connections_per_backend": 128, "max_idle_per_backend": 32, "idle_timeout_ms": 30000,
-                "max_waiters_per_backend": 500, "wait_timeout_ms": 1000 },
+                "max_waiters_per_backend": 500, "wait_timeout_ms": 1000, "fail_fast_connect": false },
       "maintenance": { "interval_ms": 250 },
       "metrics": { "slice_ms": 1000, "window_slices": 10 },
       "dashboard": { "publish_interval_ms": 250, "event_rows": 300 },
@@ -124,6 +124,7 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.pool.idle_timeout_ms, 30000u);
     EXPECT_EQ(c.pool.max_waiters_per_backend, 500u);
     EXPECT_EQ(c.pool.wait_timeout_ms, 1000u);
+    EXPECT_FALSE(c.pool.fail_fast_connect);
     EXPECT_EQ(c.maintenance.interval_ms, 250u);
     EXPECT_EQ(c.metrics.slice_ms, 1000u);
     EXPECT_EQ(c.metrics.window_slices, 10u);
@@ -296,6 +297,7 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/pool/idle_timeout_ms", 0, "between 1 and 3600000"},
     BadValueCase{"/pool/max_waiters_per_backend", 1000001, "between 0 and 1000000"},
     BadValueCase{"/pool/wait_timeout_ms", 0, "between 1 and 600000"},
+    BadValueCase{"/pool/fail_fast_connect", "true", "expected true or false"},
     BadValueCase{"/maintenance/interval_ms", 9, "between 10 and 60000"},
     BadValueCase{"/metrics/slice_ms", 99, "between 100 and 60000"},
     BadValueCase{"/dashboard/publish_interval_ms", 49, "between 50 and 10000"},

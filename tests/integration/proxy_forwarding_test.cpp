@@ -210,6 +210,30 @@ TEST_F(ProxyTest, BackendDownGives502) {
     EXPECT_TRUE(eventually([&] { return trace().steps_of_last_request() == expected; }));
 }
 
+// pool.fail_fast_connect: a refused connect is answered at once instead of after
+// Windows' SYN retries.
+TEST_F(ProxyTest, RefusedBackendConnectFailsFastOnlyWhenConfigured) {
+    const std::uint16_t dead_port = start_backend();
+    backend().stop();
+    const auto time_502 = [&](bool fail_fast) {
+        lb::Engine engine(lbtest::make_proxy_config({dead_port}, [&](nlohmann::json& j) {
+            j["pool"]["fail_fast_connect"] = fail_fast;
+        }));
+        std::string error;
+        EXPECT_TRUE(engine.start(&error)) << error;
+        const auto t0 = std::chrono::steady_clock::now();
+        EXPECT_EQ(fetch(engine.listen_port(), "/").status, 502);
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    };
+    const double fast_ms = time_502(true);
+    const double default_ms = time_502(false);
+    std::printf("[ connect ] refused backend -> 502 after %.0f ms (fail-fast) vs %.0f ms (Windows retries)\n", fast_ms,
+                default_ms);
+    EXPECT_LT(fast_ms, 300.0);
+    if (default_ms < 300.0) GTEST_SKIP() << "this system does not retry refused connects; nothing to compare";
+    EXPECT_GT(default_ms, fast_ms * 2);
+}
+
 TEST_F(ProxyTest, GarbageFromBackendGives502) {
     ScriptedBackend b("this is not http\r\n\r\n");
     start_proxy({b.port()});

@@ -31,6 +31,9 @@ struct PoolConfig {
     std::uint32_t idle_timeout_ms = 0;              // idle longer than this: closed by the maintenance thread
     std::uint32_t max_waiters_per_backend = 0;      // queue length when the cap is reached; full queue: 503
     std::uint32_t wait_timeout_ms = 0;              // queued longer than this: 503
+    // true: a refused backend connect fails at once (502) instead of after Windows' ~2 s of
+    // SYN retries; a SYN lost on the network then also fails at once.
+    bool fail_fast_connect = true;
 };
 
 // Latency histograms (plan IV.15): "live" percentiles cover a rolling window of
