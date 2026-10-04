@@ -15,11 +15,14 @@ namespace {
 
 json good_config() {
     return json::parse(R"({
-      "listen":  { "address": "0.0.0.0", "port": 8080 },
+      "listen":  { "address": "0.0.0.0", "port": 8080, "backlog": 512, "pending_accepts": 16 },
       "workers": { "threads": 4 },
       "limits": {
         "max_request_line_bytes": 8192, "max_request_header_bytes": 32768, "max_request_header_count": 100,
-        "max_response_header_bytes": 65536, "max_response_header_count": 200, "max_chunk_line_bytes": 4096 },
+        "max_response_header_bytes": 65536, "max_response_header_count": 200, "max_chunk_line_bytes": 4096,
+        "max_client_connections": 10000 },
+      "buffers": { "client_read_bytes": 16384, "backend_read_bytes": 8192 },
+      "timeouts": { "shutdown_grace_ms": 5000 },
       "groups": [
         { "name": "web", "backends": [
             { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 3 },
@@ -94,6 +97,12 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.limits.max_response_header_bytes, 65536u);
     EXPECT_EQ(c.limits.max_response_header_count, 200u);
     EXPECT_EQ(c.limits.max_chunk_line_bytes, 4096u);
+    EXPECT_EQ(c.limits.max_client_connections, 10000u);
+    EXPECT_EQ(c.listen.backlog, 512u);
+    EXPECT_EQ(c.listen.pending_accepts, 16u);
+    EXPECT_EQ(c.buffers.client_read_bytes, 16384u);
+    EXPECT_EQ(c.buffers.backend_read_bytes, 8192u);
+    EXPECT_EQ(c.timeouts.shutdown_grace_ms, 5000u);
     ASSERT_EQ(c.groups.size(), 2u);
     EXPECT_EQ(c.groups[0].name, "web");
     ASSERT_EQ(c.groups[0].backends.size(), 2u);
@@ -152,7 +161,7 @@ TEST(ConfigLoader, EveryFieldIsRequired) {
 
 TEST(ConfigLoader, UnknownFieldsAreRejectedAtEveryLevel) {
     EXPECT_REJECTED_WITH(load(with(good_config(), "/extra", 1)), "/extra", "unknown field");
-    EXPECT_REJECTED_WITH(load(with(good_config(), "/listen/backlog", 1)), "/listen/backlog", "unknown field");
+    EXPECT_REJECTED_WITH(load(with(good_config(), "/listen/reuse_port", 1)), "/listen/reuse_port", "unknown field");
     EXPECT_REJECTED_WITH(load(with(good_config(), "/groups/1/backends/0/note", "x")),
                          "/groups/1/backends/0/note", "unknown field");
 }
@@ -219,7 +228,13 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/limits/max_request_header_count", 0, "between 1 and 10000"},
     BadValueCase{"/limits/max_response_header_bytes", 255, "between 256 and 1048576"},
     BadValueCase{"/limits/max_response_header_count", 10001, "between 1 and 10000"},
-    BadValueCase{"/limits/max_chunk_line_bytes", 15, "between 16 and 65536"}), bad_value_name);
+    BadValueCase{"/limits/max_chunk_line_bytes", 15, "between 16 and 65536"},
+    BadValueCase{"/limits/max_client_connections", 0, "between 1 and 1000000"},
+    BadValueCase{"/listen/backlog", 0, "between 1 and 65535"},
+    BadValueCase{"/listen/pending_accepts", 1025, "between 1 and 1024"},
+    BadValueCase{"/buffers/client_read_bytes", 1023, "between 1024 and 1048576"},
+    BadValueCase{"/buffers/backend_read_bytes", 1048577, "between 1024 and 1048576"},
+    BadValueCase{"/timeouts/shutdown_grace_ms", 600001, "between 0 and 600000"}), bad_value_name);
 
 INSTANTIATE_TEST_SUITE_P(BadAddress, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/listen/address", "localhost", "IPv4 address literal"},

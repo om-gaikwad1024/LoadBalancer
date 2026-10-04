@@ -12,12 +12,14 @@
 
 namespace lbtest {
 
-// Minimal blocking HTTP/1.1 client for integration tests. It reads Content-Length
-// responses only (all the mock backend sends) and reports how a response ended, so
-// tests can tell a complete response from a FIN, an RST or a timeout.
+// Minimal blocking HTTP/1.1 client for integration tests, independent of the engine's
+// parser. It reads Content-Length, chunked and close-delimited bodies and reports how a
+// response ended, so tests can tell a complete response from a FIN, an RST or a timeout.
 struct ClientResponse {
     enum class End { Complete, Closed, Reset, Timeout, Error };
+    enum class Framing { None, ContentLength, Chunked, UntilClose };
     End end = End::Error;
+    Framing framing = Framing::None;
     int status = 0;
     std::string head;
     std::map<std::string, std::string> headers;  // lowercase names
@@ -92,7 +94,26 @@ public:
         const std::string cl = r.header("content-length");
         std::from_chars(cl.data(), cl.data() + cl.size(), r.content_length);
 
-        const std::size_t want = head_request ? 0 : r.content_length;
+        const bool no_body = head_request || r.status < 200 || r.status == 204 || r.status == 304;
+        if (no_body) {
+            r.end = ClientResponse::End::Complete;
+            return r;
+        }
+        if (r.header("transfer-encoding").find("chunked") != std::string::npos) {
+            r.framing = ClientResponse::Framing::Chunked;
+            return read_chunked(std::move(r));
+        }
+        if (cl.empty()) {  // close-delimited: the body ends when the server closes
+            r.framing = ClientResponse::Framing::UntilClose;
+            while (recv_more(&r.end)) {
+            }
+            r.body = std::move(buffer_);
+            buffer_.clear();
+            return r;
+        }
+
+        r.framing = ClientResponse::Framing::ContentLength;
+        const std::size_t want = r.content_length;
         while (buffer_.size() < want) {
             if (!recv_more(&r.end)) {
                 r.body = buffer_;
@@ -115,6 +136,41 @@ public:
     }
 
 private:
+    bool read_line(std::string* line, ClientResponse::End* end) {
+        std::size_t eol;
+        while ((eol = buffer_.find("\r\n")) == std::string::npos) {
+            if (!recv_more(end)) return false;
+        }
+        *line = buffer_.substr(0, eol);
+        buffer_.erase(0, eol + 2);
+        return true;
+    }
+
+    ClientResponse read_chunked(ClientResponse r) {
+        std::string line;
+        for (;;) {
+            if (!read_line(&line, &r.end)) return r;
+            std::size_t size = 0;
+            std::from_chars(line.data(), line.data() + line.size(), size, 16);
+            if (size == 0) {
+                do {
+                    if (!read_line(&line, &r.end)) return r;
+                } while (!line.empty());
+                r.end = ClientResponse::End::Complete;
+                return r;
+            }
+            while (buffer_.size() < size + 2) {
+                if (!recv_more(&r.end)) {
+                    r.body += buffer_;
+                    buffer_.clear();
+                    return r;
+                }
+            }
+            r.body += buffer_.substr(0, size);
+            buffer_.erase(0, size + 2);
+        }
+    }
+
     bool recv_more(ClientResponse::End* end) {
         char tmp[8192];
         const int n = ::recv(socket_, tmp, static_cast<int>(sizeof(tmp)), 0);

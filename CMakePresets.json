@@ -29,6 +29,12 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
     {
+      "name": "asan",
+      "displayName": "x64 AddressSanitizer (all tests)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "LB_ENABLE_ASAN": "ON" }
+    },
+    {
       "name": "fuzz",
       "displayName": "x64 parser fuzzing (ASan + libFuzzer)",
       "inherits": "base",
@@ -38,6 +44,7 @@
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
     { "name": "release", "configurePreset": "release" },
+    { "name": "asan", "configurePreset": "asan" },
     { "name": "fuzz", "configurePreset": "fuzz", "targets": [ "lb_parser_fuzz" ] }
   ],
   "testPresets": [
@@ -52,6 +59,12 @@
       "configurePreset": "release",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error", "timeout": 300 }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "timeout": 600 }
     }
   ]
 }

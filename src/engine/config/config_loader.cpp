@@ -45,6 +45,12 @@ constexpr std::uint64_t kMaxHeaderBytes = 1024 * 1024;
 constexpr std::uint64_t kMaxHeaderCount = 10000;
 constexpr std::uint64_t kMinChunkLineBytes = 16;
 constexpr std::uint64_t kMaxChunkLineBytes = 64 * 1024;
+constexpr std::uint64_t kMaxBacklog = 65535;
+constexpr std::uint64_t kMaxPendingAccepts = 1024;
+constexpr std::uint64_t kMaxClientConnections = 1'000'000;
+constexpr std::uint64_t kMinReadBufferBytes = 1024;
+constexpr std::uint64_t kMaxReadBufferBytes = 1024 * 1024;
+constexpr std::uint64_t kMaxTimeoutMs = 600'000;
 constexpr std::string_view kAutoThreads = "auto";
 constexpr std::string_view kAnyAddress = "0.0.0.0";
 
@@ -216,9 +222,34 @@ public:
 void build_listen(const json& root, Validator& v, ConfigSnapshot& out) {
     const std::string path = "/listen";
     const json* j = Validator::field(root, "listen");
-    if (j == nullptr || !v.check_object(*j, path, {"address", "port"})) return;
+    if (j == nullptr || !v.check_object(*j, path, {"address", "port", "backlog", "pending_accepts"})) return;
     if (auto a = v.get_ipv4(*j, path, "address", /*allow_any=*/true)) out.listen.address = *a;
     if (auto p = v.get_uint(*j, path, "port", 0, kMaxPort)) out.listen.port = static_cast<std::uint16_t>(*p);
+    if (auto b = v.get_uint(*j, path, "backlog", 1, kMaxBacklog)) out.listen.backlog = static_cast<std::uint32_t>(*b);
+    if (auto a = v.get_uint(*j, path, "pending_accepts", 1, kMaxPendingAccepts)) {
+        out.listen.pending_accepts = static_cast<std::uint32_t>(*a);
+    }
+}
+
+void build_buffers(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/buffers";
+    const json* j = Validator::field(root, "buffers");
+    if (j == nullptr || !v.check_object(*j, path, {"client_read_bytes", "backend_read_bytes"})) return;
+    if (auto n = v.get_uint(*j, path, "client_read_bytes", kMinReadBufferBytes, kMaxReadBufferBytes)) {
+        out.buffers.client_read_bytes = static_cast<std::uint32_t>(*n);
+    }
+    if (auto n = v.get_uint(*j, path, "backend_read_bytes", kMinReadBufferBytes, kMaxReadBufferBytes)) {
+        out.buffers.backend_read_bytes = static_cast<std::uint32_t>(*n);
+    }
+}
+
+void build_timeouts(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/timeouts";
+    const json* j = Validator::field(root, "timeouts");
+    if (j == nullptr || !v.check_object(*j, path, {"shutdown_grace_ms"})) return;
+    if (auto n = v.get_uint(*j, path, "shutdown_grace_ms", 0, kMaxTimeoutMs)) {
+        out.timeouts.shutdown_grace_ms = static_cast<std::uint32_t>(*n);
+    }
 }
 
 void build_workers(const json& root, Validator& v, ConfigSnapshot& out) {
@@ -245,7 +276,8 @@ void build_limits(const json& root, Validator& v, ConfigSnapshot& out) {
     if (j == nullptr || !v.check_object(*j, path,
                                         {"max_request_line_bytes", "max_request_header_bytes",
                                          "max_request_header_count", "max_response_header_bytes",
-                                         "max_response_header_count", "max_chunk_line_bytes"})) {
+                                         "max_response_header_count", "max_chunk_line_bytes",
+                                         "max_client_connections"})) {
         return;
     }
     const auto set = [&](std::string_view key, std::uint64_t min, std::uint64_t max, std::uint32_t& field) {
@@ -258,6 +290,7 @@ void build_limits(const json& root, Validator& v, ConfigSnapshot& out) {
     set("max_response_header_bytes", kMinHeaderBytes, kMaxHeaderBytes, l.max_response_header_bytes);
     set("max_response_header_count", 1, kMaxHeaderCount, l.max_response_header_count);
     set("max_chunk_line_bytes", kMinChunkLineBytes, kMaxChunkLineBytes, l.max_chunk_line_bytes);
+    set("max_client_connections", 1, kMaxClientConnections, l.max_client_connections);
 }
 
 // Returns true when the groups section is fully valid (routing checks depend on it).
@@ -363,10 +396,12 @@ ConfigLoadResult parse_config(std::string_view json_text) {
     for (const auto& path : duplicates.duplicates()) v.error(path, "duplicate key");
 
     auto snapshot = std::make_shared<ConfigSnapshot>();
-    if (v.check_object(root, "", {"listen", "workers", "limits", "groups", "routing"})) {
+    if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "timeouts", "groups", "routing"})) {
         build_listen(root, v, *snapshot);
         build_workers(root, v, *snapshot);
         build_limits(root, v, *snapshot);
+        build_buffers(root, v, *snapshot);
+        build_timeouts(root, v, *snapshot);
         const bool groups_valid = build_groups(root, v, *snapshot);
         build_routing(root, v, *snapshot, groups_valid);
     }

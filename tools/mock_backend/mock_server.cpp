@@ -120,12 +120,15 @@ public:
         return true;
     }
 
-    bool discard(std::uint64_t n) {
+    // Consumes n bytes, appending them to *sink when it is not null.
+    bool take(std::uint64_t n, std::string* sink) {
         while (buffer.size() < n) {
             n -= buffer.size();
+            if (sink != nullptr) sink->append(buffer);
             buffer.clear();
             if (!recv_more()) return false;
         }
+        if (sink != nullptr) sink->append(buffer, 0, static_cast<std::size_t>(n));
         buffer.erase(0, static_cast<std::size_t>(n));
         return true;
     }
@@ -163,12 +166,14 @@ std::string apply_fault_setting(MockFaults& f, std::string_view key, std::string
     if (key == "partial_rate") return rate(&f.partial_rate);
     if (key == "health_status") return status(&f.health_status);
     if (key == "body_bytes") return count(&f.body_bytes, 64u * 1024 * 1024);
-    if (key == "echo_headers") {
-        if (value == "1" || value == "true") f.echo_headers = true;
-        else if (value == "0" || value == "false") f.echo_headers = false;
-        else return "echo_headers must be 0, 1, true or false";
+    const auto flag = [&](bool* field) -> std::string {
+        if (value == "1" || value == "true") *field = true;
+        else if (value == "0" || value == "false") *field = false;
+        else return std::string(key) + " must be 0, 1, true or false";
         return {};
-    }
+    };
+    if (key == "echo_headers") return flag(&f.echo_headers);
+    if (key == "echo_body") return flag(&f.echo_body);
     return "unknown setting: " + std::string(key);
 }
 
@@ -176,9 +181,9 @@ std::string faults_to_json(const MockFaults& f) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
                   "{\"latency_ms\":%u,\"error_rate\":%g,\"error_status\":%d,\"close_rate\":%g,\"partial_rate\":%g,"
-                  "\"echo_headers\":%s,\"health_status\":%d,\"body_bytes\":%u}",
+                  "\"echo_headers\":%s,\"echo_body\":%s,\"health_status\":%d,\"body_bytes\":%u}",
                   f.latency_ms, f.error_rate, f.error_status, f.close_rate, f.partial_rate,
-                  f.echo_headers ? "true" : "false", f.health_status, f.body_bytes);
+                  f.echo_headers ? "true" : "false", f.echo_body ? "true" : "false", f.health_status, f.body_bytes);
     return buf;
 }
 
@@ -424,7 +429,9 @@ void MockServer::serve(Connection* conn) {
             break;
         }
 
-        // Body: read and discard.
+        // Body: read and discard, or keep it for echo_body.
+        std::string body;
+        std::string* sink = faults().echo_body ? &body : nullptr;
         bool body_ok = true;
         if (chunked) {
             std::string line;
@@ -446,18 +453,18 @@ void MockServer::serve(Connection* conn) {
                     } while (body_ok && !line.empty());
                     break;
                 }
-                if (!reader.discard(size + 2)) {
+                if (!reader.take(size, sink) || !reader.take(2, nullptr)) {
                     body_ok = false;
                     break;
                 }
             }
         } else if (content_length > 0) {
-            body_ok = reader.discard(content_length);
+            body_ok = reader.take(content_length, sink);
         }
         if (!body_ok) break;
 
         const bool keep_alive = version == "HTTP/1.1" ? !conn_close : conn_keep_alive;
-        outcome = handle_request(s, method, target, head, keep_alive);
+        outcome = handle_request(s, method, target, head, body, keep_alive);
         if (outcome != Outcome::KeepOpen) break;
     }
 
@@ -480,7 +487,8 @@ void MockServer::serve(Connection* conn) {
 }
 
 MockServer::Outcome MockServer::handle_request(SOCKET s, std::string_view method, std::string_view target,
-                                               std::string_view raw_head, bool keep_alive) {
+                                               std::string_view raw_head, std::string_view request_body,
+                                               bool keep_alive) {
     const auto qmark = target.find('?');
     const std::string_view path = target.substr(0, qmark);
     std::string_view query = qmark == std::string_view::npos ? std::string_view{} : target.substr(qmark + 1);
@@ -544,7 +552,13 @@ MockServer::Outcome MockServer::handle_request(SOCKET s, std::string_view method
         return Outcome::Abort;
     }
 
-    std::string body = f.echo_headers ? std::string(raw_head) : default_body(f.body_bytes);
+    std::string body;
+    if (f.echo_headers || f.echo_body) {
+        if (f.echo_headers) body.append(raw_head);
+        if (f.echo_body) body.append(request_body);
+    } else {
+        body = default_body(f.body_bytes);
+    }
 
     if (draw(n, 1) < f.partial_rate) {
         if (body.size() < 2) body = default_body(2);

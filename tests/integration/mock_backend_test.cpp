@@ -224,6 +224,17 @@ TEST_F(MockBackend, EchoHeadersReturnsTheReceivedRequestHead) {
     EXPECT_NE(r.body.find("\r\nX-Test: 123\r\n"), std::string::npos);
 }
 
+TEST_F(MockBackend, EchoBodyReturnsTheDechunkedRequestBody) {
+    mock::MockFaults f;
+    f.echo_body = true;
+    start_with(f);
+    TestClient c(port());
+    ASSERT_TRUE(c.send("POST / HTTP/1.1\r\nHost: t\r\nContent-Length: 5\r\n\r\nhello"));
+    EXPECT_EQ(c.read_response().body, "hello");
+    ASSERT_TRUE(c.send("POST / HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"));
+    EXPECT_EQ(c.read_response().body, "abcde");
+}
+
 TEST_F(MockBackend, HealthPathHasItsOwnStatusAndIgnoresOtherFaults) {
     mock::MockFaults f;
     f.error_rate = 1.0;

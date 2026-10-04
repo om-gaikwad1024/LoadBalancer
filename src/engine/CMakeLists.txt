@@ -8,6 +8,19 @@ add_library(lb_engine STATIC
   http/http_message.h
   http/http_parser.h
   http/http_parser.cpp
+  net/winsock.h
+  net/winsock.cpp
+  net/iocp.h
+  net/iocp.cpp
+  net/listener.h
+  net/listener.cpp
+  proxy/trace.h
+  proxy/http_writer.h
+  proxy/http_writer.cpp
+  proxy/session_context.h
+  proxy/session_context.cpp
+  proxy/client_session.h
+  proxy/client_session.cpp
   engine.h
   engine.cpp
 )

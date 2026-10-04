@@ -17,8 +17,12 @@ include(CompilerWarnings)
 # Plan IX fuzzing: MSVC libFuzzer + AddressSanitizer. Only the `fuzz` preset turns this on;
 # it instruments every project target and builds lb_parser_fuzz.
 option(LB_BUILD_FUZZ "Build the parser fuzz target with ASan + libFuzzer" OFF)
-if(LB_BUILD_FUZZ)
+# The `asan` preset runs the whole test suite under AddressSanitizer (session lifetimes,
+# buffer handling); the `fuzz` preset implies it too.
+option(LB_ENABLE_ASAN "Instrument every project target with AddressSanitizer" OFF)
+if(LB_BUILD_FUZZ OR LB_ENABLE_ASAN)
   add_compile_options(/fsanitize=address)
+  add_link_options(/INCREMENTAL:NO)
 endif()
 
 find_package(nlohmann_json CONFIG REQUIRED)
@@ -29,6 +33,7 @@ enable_testing()
 add_subdirectory(src/engine)
 add_subdirectory(src/app)
 add_subdirectory(tools/mock_backend)
+add_subdirectory(tools/lb_console)
 add_subdirectory(tests)
 
 include(EngineNoMfc)

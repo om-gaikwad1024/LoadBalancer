@@ -1,0 +1,50 @@
+#pragma once
+
+#include <gtest/gtest.h>
+
+#include <nlohmann/json.hpp>
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "config/config_loader.h"
+
+namespace lbtest {
+
+// A complete, valid proxy config for tests: listener on an ephemeral port, the given
+// backends in group "web". `tweak` edits the JSON before it goes through the real loader.
+inline std::shared_ptr<const lb::ConfigSnapshot> make_proxy_config(
+    const std::vector<std::uint16_t>& backend_ports, const std::function<void(nlohmann::json&)>& tweak = {}) {
+    nlohmann::json backends = nlohmann::json::array();
+    for (std::size_t i = 0; i < backend_ports.size(); ++i) {
+        backends.push_back({{"id", "b" + std::to_string(i + 1)},
+                            {"address", "127.0.0.1"},
+                            {"port", backend_ports[i]},
+                            {"weight", 1}});
+    }
+    nlohmann::json j = {
+        {"listen", {{"address", "127.0.0.1"}, {"port", 0}, {"backlog", 256}, {"pending_accepts", 8}}},
+        {"workers", {{"threads", 2}}},
+        {"limits",
+         {{"max_request_line_bytes", 8192},
+          {"max_request_header_bytes", 32768},
+          {"max_request_header_count", 100},
+          {"max_response_header_bytes", 65536},
+          {"max_response_header_count", 200},
+          {"max_chunk_line_bytes", 4096},
+          {"max_client_connections", 1000}}},
+        {"buffers", {{"client_read_bytes", 16384}, {"backend_read_bytes", 16384}}},
+        {"timeouts", {{"shutdown_grace_ms", 5000}}},
+        {"groups", {{{"name", "web"}, {"backends", backends}}}},
+        {"routing", {{"default_group", "web"}}},
+    };
+    if (tweak) tweak(j);
+    auto loaded = lb::parse_config(j.dump());
+    for (const auto& e : loaded.errors) ADD_FAILURE() << "test config rejected: " << lb::to_string(e);
+    return loaded.snapshot;
+}
+
+}  // namespace lbtest

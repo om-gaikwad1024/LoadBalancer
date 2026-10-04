@@ -1,7 +1,9 @@
 {
   "listen": {
     "address": "127.0.0.1",
-    "port": 8080
+    "port": 8080,
+    "backlog": 1024,
+    "pending_accepts": 32
   },
   "workers": {
     "threads": "auto"
@@ -12,7 +14,15 @@
     "max_request_header_count": 100,
     "max_response_header_bytes": 65536,
     "max_response_header_count": 200,
-    "max_chunk_line_bytes": 4096
+    "max_chunk_line_bytes": 4096,
+    "max_client_connections": 10000
+  },
+  "buffers": {
+    "client_read_bytes": 16384,
+    "backend_read_bytes": 16384
+  },
+  "timeouts": {
+    "shutdown_grace_ms": 10000
   },
   "groups": [
     {

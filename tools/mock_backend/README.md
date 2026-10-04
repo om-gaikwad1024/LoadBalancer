@@ -27,6 +27,7 @@ Set them at startup (`--latency-ms 50`) or while the mock runs (`GET /__mock/set
 | `close_rate` | 0 | Share of requests answered by an abrupt close (RST), with no bytes sent |
 | `partial_rate` | 0 | Share answered with the full head and half the promised body, then FIN |
 | `echo_headers` | 0 | Response body = the request line and headers as received |
+| `echo_body` | 0 | Response body = the received request body, de-chunked (after the head if `echo_headers` is also on) |
 | `health_status` | 200 | Status of the health path |
 | `body_bytes` | 2 | Size of a normal 200 body (`ok`, padded with `.`) |
 

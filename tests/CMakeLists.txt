@@ -20,9 +20,15 @@ gtest_discover_tests(lb_unit_tests DISCOVERY_MODE PRE_TEST NO_PRETTY_VALUES PROP
 add_executable(lb_integration_tests
   integration/test_http_client.h
   integration/test_process.h
+  integration/test_config.h
+  integration/scripted_backend.h
+  integration/proxy_test_fixture.h
   integration/mock_backend_test.cpp
+  integration/proxy_forwarding_test.cpp
+  integration/proxy_lifecycle_test.cpp
 )
-target_link_libraries(lb_integration_tests PRIVATE lb_engine mock_backend_lib GTest::gtest GTest::gtest_main)
+target_link_libraries(lb_integration_tests PRIVATE
+  lb_engine mock_backend_lib nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)
 lb_set_project_options(lb_integration_tests)
 target_compile_definitions(lb_integration_tests PRIVATE
   WIN32_LEAN_AND_MEAN
@@ -36,5 +42,4 @@ if(LB_BUILD_FUZZ)
   target_link_libraries(lb_parser_fuzz PRIVATE lb_engine)
   lb_set_project_options(lb_parser_fuzz)
   target_compile_options(lb_parser_fuzz PRIVATE /fsanitize=fuzzer)
-  target_link_options(lb_parser_fuzz PRIVATE /INCREMENTAL:NO)
 endif()

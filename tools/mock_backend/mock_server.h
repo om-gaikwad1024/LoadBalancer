@@ -24,6 +24,7 @@ struct MockFaults {
     double close_rate = 0.0;    // share of requests answered by an abrupt close (RST), no bytes sent
     double partial_rate = 0.0;  // share answered with the head and half the body, then RST
     bool echo_headers = false;  // response body = the received request line and headers
+    bool echo_body = false;     // response body = the received (de-chunked) request body; after the head if both
     int health_status = 200;    // status of the health path; other faults never apply to it
     std::uint32_t body_bytes = 2;  // size of a normal 200 body ("ok", padded with '.')
 };
@@ -93,7 +94,7 @@ private:
     void serve(Connection* conn);
     void reap_finished_locked();
     Outcome handle_request(SOCKET s, std::string_view method, std::string_view target, std::string_view raw_head,
-                           bool keep_alive);
+                           std::string_view body, bool keep_alive);
     void count_status(int status);
     double draw(std::uint64_t request_number, int which) const noexcept;
     bool sleep_unless_stopping(std::uint32_t ms);

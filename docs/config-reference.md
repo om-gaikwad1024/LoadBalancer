@@ -20,6 +20,8 @@ Example: [`config/lb.example.json`](../config/lb.example.json).
 |---|---|---|---|
 | `listen.address` | string | IPv4 literal; `0.0.0.0` = all interfaces | Address the HTTP listener binds to |
 | `listen.port` | integer | 0–65535 | TCP port. `0` lets the OS pick a free port (used by tests) |
+| `listen.backlog` | integer | 1–65535 | `listen()` backlog: connections the OS queues before the proxy accepts them |
+| `listen.pending_accepts` | integer | 1–1024 | `AcceptEx` calls kept outstanding on the IOCP. Higher values absorb connection bursts |
 
 ## `workers`: IOCP worker pool (plan II.2, V)
 | Field | Type | Valid range | Meaning |
@@ -38,6 +40,23 @@ treated as a bad response (502) and that backend connection is never reused.
 | `limits.max_response_header_bytes` | integer | 256–1048576 | Largest whole response head (status line, header fields, final empty line). Over it: **502** |
 | `limits.max_response_header_count` | integer | 1–10000 | Most header fields in one response. Over it: **502** |
 | `limits.max_chunk_line_bytes` | integer | 16–65536 | Longest chunk-size line (hex size plus chunk extensions), excluding CRLF, in either direction. Over it: 400 (request) or 502 (response) |
+| `limits.max_client_connections` | integer | 1–1000000 | Global cap on open client connections (plan IV.1). A connection over the cap is accepted, answered with **503**, closed and counted as rejected. Never silently dropped |
+
+## `buffers`: per-connection receive buffers
+Each connection reads at most this many bytes per receive. A slow peer causes back-pressure,
+because the proxy never reads further ahead than one buffer per direction.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `buffers.client_read_bytes` | integer | 1024–1048576 | Receive size on the client connection |
+| `buffers.backend_read_bytes` | integer | 1024–1048576 | Receive size on the backend connection |
+
+## `timeouts` (plan VI)
+Every interval is measured on the monotonic clock. Step 1.6 adds the rest of the plan VI timeouts table.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `timeouts.shutdown_grace_ms` | integer | 0–600000 | On shutdown: the proxy stops accepting and closes idle keep-alive connections at once. In-flight requests get this long to finish (their responses carry `Connection: close`), then the remaining connections are closed |
 
 ## `groups`: backend groups (plan IV.4, IV.7)
 `groups` is a non-empty array. Each group:
