@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -185,12 +186,18 @@ public:
         listener_.reset();
         port_.close();
 
-        // 6. Last entry, then flush the log (plan VI: flush logs before exit).
+        // 6. Last entry, with the final metrics, then flush and close the log (plan VI: flush
+        // logs and metrics before exit). Every worker has stopped, so every request is counted.
         const EngineStats s = stats();
+        const MetricsSnapshot m = metrics_->snapshot(Clock::now());
+        const auto& total = m.system.total_since_start;
+        char tail[96];
+        std::snprintf(tail, sizeof(tail), "; since start p50 %.3f ms, p99 %.3f ms, max %.3f ms", total.p50_ms,
+                      total.p99_ms, total.max_ms);
         events_->emit("engine_stopped",
                       "stopped after " + std::to_string(s.connections_accepted) + " connections and " +
-                          std::to_string(s.requests_completed) + " requests",
-                      {{"connections", s.connections_accepted}, {"requests", s.requests_completed}});
+                          std::to_string(s.requests_completed) + " requests" + (total.count > 0 ? tail : ""),
+                      final_summary(s, m));
         events_->stop();
     }
 
@@ -624,6 +631,53 @@ private:
                 std::erase_if(drains_, [&](const Drain& x) { return x.id == d.id && x.started == d.started; });
             }
         }
+    }
+
+    // The engine_stopped entry's fields: the run's final metrics, since start (plan VI, IV.15).
+    nlohmann::json final_summary(const EngineStats& s, const MetricsSnapshot& m) const {
+        const auto latency = [](const LatencyStats& l) {
+            return nlohmann::json{{"count", l.count}, {"mean", l.mean_ms}, {"p50", l.p50_ms},
+                                  {"p95", l.p95_ms}, {"p99", l.p99_ms},  {"max", l.max_ms}};
+        };
+        const auto series = [&](const SeriesMetrics& x) {
+            const auto& st = x.status_since_start;
+            std::uint64_t requests = 0;
+            for (const auto c : st) requests += c;
+            return nlohmann::json{
+                {"id", x.id},
+                {"requests", requests},
+                {"latency_ms", latency(x.total_since_start)},
+                {"backend_latency_ms", latency(x.backend_since_start)},
+                {"status", {{"1xx", st[k1xx]}, {"2xx", st[k2xx]}, {"3xx", st[k3xx]},
+                            {"4xx", st[k4xx]}, {"5xx", st[k5xx]}, {"aborted", st[kAborted]}}}};
+        };
+        nlohmann::json backends = nlohmann::json::array();
+        for (const auto& b : m.backends) backends.push_back(series(b));
+        return {
+            {"connections", s.connections_accepted},
+            {"requests", s.requests_completed},
+            {"uptime_s", std::chrono::duration<double>(Clock::now() - origin_).count()},
+            {"metrics", {{"system", series(m.system)}, {"backends", backends}}},
+            {"stats",
+             {{"connections_rejected", s.connections_rejected},
+              {"error_responses", s.error_responses},
+              {"no_backend_available", s.no_backend_available},
+              {"pool_rejections", s.pool_rejections},
+              {"client_timeouts", s.client_timeouts},
+              {"backend_timeouts", s.backend_timeouts},
+              {"backend_connections_opened", s.backend_connections_opened},
+              {"backend_connections_reused", s.backend_connections_reused},
+              {"stale_retries", s.stale_retries},
+              {"backends_marked_down", s.backends_marked_down},
+              {"backends_marked_up", s.backends_marked_up},
+              {"reloads_accepted", s.reloads_accepted},
+              {"reloads_rejected", s.reloads_rejected},
+              {"drains_completed", s.drains_completed},
+              {"drains_timed_out", s.drains_timed_out},
+              {"drain_aborted_requests", s.drain_aborted_requests},
+              {"sticky_reassignments", s.sticky_reassignments},
+              {"events_dropped", s.events_dropped}}},
+        };
     }
 
     static std::vector<std::string> backend_ids(const ConfigSnapshot& config) {

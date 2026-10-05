@@ -233,3 +233,52 @@ TEST_F(ProxyTest, RefusedConnectionsAndBackendTimeoutsAreLogged) {
         if (ev.type == "backend_error") EXPECT_NE(ev.message.find("no response headers within 200 ms"), std::string::npos);
     }
 }
+
+// Plan VI: shutdown flushes the log and the metrics. The last line written to the file is
+// engine_stopped, carrying the run's final metrics: every request is counted, since start.
+TEST_F(ProxyTest, ShutdownWritesTheFinalMetricsAsTheLastLogEntry) {
+    const fs::path dir = fs::temp_directory_path() / "lb-final-metrics";
+    fs::remove_all(dir);
+    const fs::path file = dir / "events.jsonl";
+    mock::MockFaults failing;
+    failing.error_rate = 1.0;
+    const auto p1 = start_backend({}, "b1");
+    const auto p2 = start_backend(failing, "b2");
+    start_proxy({p1, p2}, [&](nlohmann::json& j) { j["event_log"]["path"] = file.string(); });
+    for (int i = 0; i < 20; ++i) fetch(proxy_port(), "/");  // round robin: 10 to each
+    engine().stop();
+
+    std::vector<nlohmann::json> lines;
+    std::ifstream in(file);
+    for (std::string line; std::getline(in, line);) lines.push_back(nlohmann::json::parse(line));
+    ASSERT_FALSE(lines.empty());
+    const auto& last = lines.back();
+    std::printf("[ log ] %s\n", last.dump().c_str());
+    ASSERT_EQ(last["event"], "engine_stopped");
+    EXPECT_NE(last["message"].get<std::string>().find("20 requests; since start p50 "), std::string::npos)
+        << last["message"];
+    EXPECT_EQ(last["requests"], 20);
+    EXPECT_GT(last["uptime_s"].get<double>(), 0.0);
+
+    const auto& system = last["metrics"]["system"];
+    EXPECT_EQ(system["id"], "*");
+    EXPECT_EQ(system["requests"], 20);
+    EXPECT_EQ(system["latency_ms"]["count"], 20);
+    EXPECT_GT(system["latency_ms"]["p99"].get<double>(), 0.0);
+    EXPECT_GE(system["latency_ms"]["max"].get<double>(), system["latency_ms"]["p99"].get<double>());
+    EXPECT_EQ(system["status"]["2xx"], 10);
+    EXPECT_EQ(system["status"]["5xx"], 10);
+
+    const auto& backends = last["metrics"]["backends"];
+    ASSERT_EQ(backends.size(), 2u);
+    EXPECT_EQ(backends[0]["id"], "b1");
+    EXPECT_EQ(backends[0]["status"]["2xx"], 10);
+    EXPECT_EQ(backends[1]["id"], "b2");
+    EXPECT_EQ(backends[1]["status"]["5xx"], 10);
+    EXPECT_EQ(backends[1]["backend_latency_ms"]["count"], 10);
+    EXPECT_EQ(last["stats"]["error_responses"], 0);  // the 500s were the backend's, not the proxy's
+    EXPECT_EQ(last["stats"]["events_dropped"], 0);
+    in.close();
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}

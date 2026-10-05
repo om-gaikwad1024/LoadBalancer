@@ -127,7 +127,10 @@ and `request_id` (the X-Request-Id) when they apply.
 | `event_log.recent_events` | integer | 0–100000 | Newest entries kept in memory for the dashboard's live list |
 | `event_log.trace_requests` | boolean | `true` / `false` | Debug mode: log every pipeline step of every request as `request_step` (plan IV.18). High volume |
 
-Events written: `engine_started`, `engine_stopped`, `backend_marked_unhealthy` (with `reason`,
+Events written: `engine_started`, `engine_stopped` (the last entry, written after every request has
+finished and before the log is flushed and closed, so a run's final metrics survive it: `metrics.system` and
+`metrics.backends[]` with since-start `latency_ms` and `backend_latency_ms` (count, mean, p50, p95, p99, max),
+`requests` and `status` counts by class, plus the engine's counters in `stats` and `uptime_s`; plan VI), `backend_marked_unhealthy` (with `reason`,
 `failures` and `check`: `active` for probes, `passive` for real requests, with the request that
 tipped it over), `backend_marked_healthy` (`successes`, `check`), `no_backend_available`, `connection_rejected`
 (over `max_client_connections`), `pool_rejected` (`queue_full` / `wait_timeout`), `backend_error`
