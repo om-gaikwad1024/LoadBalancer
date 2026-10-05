@@ -73,6 +73,7 @@ struct EventLogConfig {
 struct DashboardConfig {
     std::uint32_t publish_interval_ms = 0;  // engine publishes a copied snapshot this often; the UI repaints at the same rate
     std::uint32_t event_rows = 0;           // rows kept in the live event list
+    std::uint32_t graph_points = 0;         // metric slices each graph shows (its time span = graph_points x slice_ms)
 };
 
 // Maintenance thread (plan V): idle-connection sweeps, later stale sticky/rate-limit entries.

@@ -22,6 +22,8 @@ add_library(lb_engine STATIC
   log/event_types.h
   log/event_log.h
   log/event_log.cpp
+  log/event_filter.h
+  log/event_filter.cpp
   health/hysteresis.h
   health/health_checker.h
   health/health_checker.cpp
@@ -32,6 +34,8 @@ add_library(lb_engine STATIC
   config/config_watcher.h
   config/config_watcher.cpp
   config/reload_rules.h
+  config/config_editor.h
+  config/config_editor.cpp
   config/reload_rules.cpp
   http/http_message.h
   http/http_parser.h

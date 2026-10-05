@@ -18,6 +18,7 @@ add_executable(lb_unit_tests
   unit/config_reload_test.cpp
   unit/router_test.cpp
   unit/sticky_table_test.cpp
+  unit/event_filter_test.cpp
 )
 target_link_libraries(lb_unit_tests PRIVATE lb_engine nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)
 lb_set_project_options(lb_unit_tests)
@@ -47,6 +48,7 @@ add_executable(lb_integration_tests
   integration/proxy_sticky_test.cpp
   integration/proxy_passive_health_test.cpp
   integration/proxy_drain_test.cpp
+  integration/proxy_admin_test.cpp
 )
 target_link_libraries(lb_integration_tests PRIVATE
   lb_engine mock_backend_lib nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)

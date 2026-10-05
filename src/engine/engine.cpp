@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "backend/registry.h"
+#include "config/config_editor.h"
 #include "config/config_loader.h"
 #include "config/config_store.h"
 #include "config/config_watcher.h"
@@ -419,16 +420,19 @@ public:
             return false;
         }
         const auto config = config_.current();
-        if (!config->config_reload.watch_file) return true;  // reload stays available through the API
         std::string text;
         if (!read_file(path, &text)) {
             *error = "cannot read " + utf8(path);
             return false;
         }
         {
+            std::lock_guard admin(admin_mutex_);
             std::lock_guard lock(reload_mutex_);
             content_hash_ = config_content_hash(text);
+            config_path_ = path;
         }
+        admin_available_ = true;
+        if (!config->config_reload.watch_file) return true;  // reload stays available through the API
         if (!watcher_.start(path, std::chrono::milliseconds(config->config_reload.debounce_ms),
                             [this, path] { reload_from_file(path, "file"); }, error)) {
             return false;
@@ -440,10 +444,108 @@ public:
         return true;
     }
 
+    AdminResult admin_add_backend(const BackendEdit& b) {
+        return admin_edit("added backend " + b.id, [&](admin::Document& doc) {
+            return admin::add_backend(doc, {b.group, b.id, b.address, b.port, b.weight});
+        });
+    }
+
+    AdminResult admin_update_backend(const BackendEdit& b) {
+        return admin_edit("updated backend " + b.id, [&](admin::Document& doc) {
+            return admin::update_backend(doc, {b.group, b.id, b.address, b.port, b.weight});
+        });
+    }
+
+    AdminResult admin_remove_backend(std::string_view id) {
+        return admin_edit("removed backend " + std::string(id),
+                          [&](admin::Document& doc) { return admin::remove_backend(doc, id); });
+    }
+
+    AdminResult admin_drain_backend(std::string_view id) {
+        return admin_edit("draining " + std::string(id),
+                          [&](admin::Document& doc) { return admin::set_backend_drain(doc, id, "start"); });
+    }
+
+    AdminResult admin_undrain_backend(std::string_view id) {
+        AdminResult r = admin_edit("returned " + std::string(id) + " to service",
+                                   [&](admin::Document& doc) { return admin::set_backend_drain(doc, id, "keep"); });
+        if (r.ok && !undrain_backend(id, "gui")) {
+            const auto b = backends_.find(id);
+            if (b && b->state.load() != BackendState::Healthy && b->state.load() != BackendState::Unhealthy) {
+                r.ok = false;
+                r.error = std::string(id) + " could not be returned to service";
+            }
+        }
+        return r;
+    }
+
+    AdminResult admin_set_routing(const RoutingConfig& routing) {
+        return admin_edit("routing rules saved (" + std::to_string(routing.rules.size()) + " rules)",
+                          [&](admin::Document& doc) { return admin::set_routing(doc, routing); });
+    }
+
     void set_trace_sink(TraceSink* sink) noexcept { trace_.store(sink, std::memory_order_release); }
     void set_snapshot_sink(SnapshotSink* sink) noexcept { sink_.store(sink, std::memory_order_release); }
 
 private:
+    // Plan IV.17 / IV.14: an admin edit is a config change like any other. The active file's
+    // document is edited, validated and applied by reload_from_text(), and saved only if it
+    // was accepted. One edit at a time.
+    AdminResult admin_edit(const std::string& what, const std::function<std::string(admin::Document&)>& edit) {
+        std::lock_guard admin(admin_mutex_);
+        AdminResult r;
+        if (!started_ || stopping_.load()) {
+            r.error = "the engine is not running";
+            return r;
+        }
+        if (config_path_.empty()) {
+            r.error = "admin edits are saved to the config file, and none is registered";
+            return r;
+        }
+        std::string text;
+        if (!read_file(config_path_, &text)) {
+            r.error = "cannot read " + utf8(config_path_);
+            return r;
+        }
+        {
+            std::lock_guard lock(reload_mutex_);
+            if (config_content_hash(text) != content_hash_) {
+                r.error = utf8(config_path_) +
+                          " is not the active config (it was changed and not applied, or it was rejected). "
+                          "Fix or reload it first, so this edit does not overwrite those changes.";
+                return r;
+            }
+        }
+        admin::Document doc;
+        try {
+            doc = admin::Document::parse(text);
+        } catch (const std::exception& e) {
+            r.error = std::string("the config file cannot be parsed: ") + e.what();
+            return r;
+        }
+        if (std::string problem = edit(doc); !problem.empty()) {
+            r.error = std::move(problem);
+            return r;
+        }
+        const std::string next = doc.dump(2) + "\n";
+        const ReloadResult applied = reload_from_text(next, "gui");
+        if (!applied.accepted && !applied.unchanged) {
+            for (const auto& e : applied.errors) r.error += (r.error.empty() ? "" : "\n") + e;
+            return r;
+        }
+        std::string write_error;
+        if (!admin::write_file_atomically(config_path_, next, &write_error)) {
+            r.error = "applied, but not saved to " + utf8(config_path_) + ": " + write_error;
+            events_->emit("admin_save_failed", r.error, {{"path", utf8(config_path_)}});
+            return r;
+        }
+        r.ok = true;
+        r.summary = what + (applied.accepted ? " (" + applied.summary + ")" : "");
+        events_->emit("admin_edit", "admin: " + r.summary + "; saved to " + utf8(config_path_),
+                      {{"edit", what}, {"path", utf8(config_path_)}});
+        return r;
+    }
+
     // Maintenance thread (plan V): idle pooled connections past their timeout, expired sticky
     // mappings, and one event per interval if new sessions could not be stored.
     void maintain() {
@@ -606,6 +708,8 @@ private:
             snap->stats = stats();
             snap->backends = backend_stats();
             snap->metrics = metrics_->snapshot(now);
+            snap->config = config_.current();
+            snap->admin_available = admin_available_.load();
             for (auto& e : events_->recent()) {
                 if (e.sequence > last_published_event_) snap->new_events.push_back(std::move(e));
             }
@@ -658,6 +762,9 @@ private:
     std::atomic<std::uint64_t> reloads_accepted_{0};
     std::atomic<std::uint64_t> reloads_rejected_{0};
     ConfigWatcher watcher_;
+    std::mutex admin_mutex_;               // one admin edit at a time; also guards config_path_
+    std::filesystem::path config_path_;    // the active config's file, once registered
+    std::atomic<bool> admin_available_{false};
     PeriodicThread publisher_;  // declared last: stopped (and destroyed) first
     bool started_ = false;
     bool stopped_ = false;
@@ -690,6 +797,12 @@ ReloadResult Engine::reload_from_file(const std::filesystem::path& path) { retur
 bool Engine::watch_config_file(const std::filesystem::path& path, std::string* error) {
     return impl_->watch_config_file(path, error);
 }
+AdminResult Engine::admin_add_backend(const BackendEdit& backend) { return impl_->admin_add_backend(backend); }
+AdminResult Engine::admin_update_backend(const BackendEdit& backend) { return impl_->admin_update_backend(backend); }
+AdminResult Engine::admin_remove_backend(std::string_view id) { return impl_->admin_remove_backend(id); }
+AdminResult Engine::admin_drain_backend(std::string_view id) { return impl_->admin_drain_backend(id); }
+AdminResult Engine::admin_undrain_backend(std::string_view id) { return impl_->admin_undrain_backend(id); }
+AdminResult Engine::admin_set_routing(const RoutingConfig& routing) { return impl_->admin_set_routing(routing); }
 void Engine::set_trace_sink(TraceSink* sink) noexcept { impl_->set_trace_sink(sink); }
 void Engine::set_snapshot_sink(SnapshotSink* sink) noexcept { impl_->set_snapshot_sink(sink); }
 

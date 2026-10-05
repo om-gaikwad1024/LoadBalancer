@@ -346,11 +346,12 @@ void build_event_log(const json& root, Validator& v, ConfigSnapshot& out) {
 void build_dashboard(const json& root, Validator& v, ConfigSnapshot& out) {
     const std::string path = "/dashboard";
     const json* j = Validator::field(root, "dashboard");
-    if (j == nullptr || !v.check_object(*j, path, {"publish_interval_ms", "event_rows"})) return;
+    if (j == nullptr || !v.check_object(*j, path, {"publish_interval_ms", "event_rows", "graph_points"})) return;
     if (auto n = v.get_uint(*j, path, "publish_interval_ms", 50, 10'000)) {
         out.dashboard.publish_interval_ms = static_cast<std::uint32_t>(*n);
     }
     if (auto n = v.get_uint(*j, path, "event_rows", 10, 100'000)) out.dashboard.event_rows = static_cast<std::uint32_t>(*n);
+    if (auto n = v.get_uint(*j, path, "graph_points", 10, 3600)) out.dashboard.graph_points = static_cast<std::uint32_t>(*n);
 }
 
 void build_maintenance(const json& root, Validator& v, ConfigSnapshot& out) {

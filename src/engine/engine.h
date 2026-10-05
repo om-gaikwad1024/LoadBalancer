@@ -69,6 +69,24 @@ struct DashboardSnapshot {
     std::vector<BackendStats> backends;
     MetricsSnapshot metrics;
     std::vector<LoggedEvent> new_events;  // event-log entries added since the previous snapshot
+    // The active config (immutable; for the admin dialogs: groups, backends, routing rules).
+    std::shared_ptr<const ConfigSnapshot> config;
+    bool admin_available = false;  // a config file is registered, so admin edits can be saved
+};
+
+// Admin edits (plan IV.17).
+struct BackendEdit {
+    std::string group;  // ignored by updates: a backend changes group by removal and re-adding
+    std::string id;
+    std::string address;
+    std::uint16_t port = 0;
+    std::uint32_t weight = 1;
+};
+
+struct AdminResult {
+    bool ok = false;
+    std::string error;    // why nothing changed (validation errors name the JSON field)
+    std::string summary;  // what changed
 };
 
 // Receives snapshots on the engine's publisher thread. Implementations must only hand the
@@ -141,10 +159,24 @@ public:
     ReloadResult reload_from_text(std::string_view json_text, std::string_view source);
     ReloadResult reload_from_file(const std::filesystem::path& path);
 
-    // After start(): when config_reload.watch_file is true, reloads `path` whenever it
-    // changes, debounced by config_reload.debounce_ms. The file's current content is taken
-    // as the active config's. Returns false (and fills *error) if the file cannot be watched.
+    // After start(): registers `path` as the active config's file (its current content is
+    // taken as the active config's, and admin edits are saved to it), and when
+    // config_reload.watch_file is true, reloads it whenever it changes, debounced by
+    // config_reload.debounce_ms. Returns false (and fills *error) if the file cannot be read
+    // or watched.
     bool watch_config_file(const std::filesystem::path& path, std::string* error);
+
+    // Admin edits (plan IV.17, IV.14). Each edits the config file's document, goes through
+    // the same validation and apply path as any reload, and only if that accepts it is the
+    // file saved (atomically; the watcher recognizes its content and does not reload again).
+    // They need a registered config file whose content is the active config. Called from
+    // the UI thread; they do no networking.
+    AdminResult admin_add_backend(const BackendEdit& backend);
+    AdminResult admin_update_backend(const BackendEdit& backend);  // address, port, weight, by id
+    AdminResult admin_remove_backend(std::string_view backend_id);
+    AdminResult admin_drain_backend(std::string_view backend_id);    // saved as "drain": "start"
+    AdminResult admin_undrain_backend(std::string_view backend_id);  // saved as "drain": "keep"
+    AdminResult admin_set_routing(const RoutingConfig& routing);
 
     // Optional per-step trace (plan IV.18). Set before start(); the sink must outlive the engine run.
     void set_trace_sink(TraceSink* sink) noexcept;

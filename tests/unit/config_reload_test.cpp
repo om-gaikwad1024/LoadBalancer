@@ -102,6 +102,7 @@ TEST(ReloadRules, EachRestartOnlyFieldIsNamed) {
         {"event_log.trace_requests", [](auto& c) { c.event_log.trace_requests = !c.event_log.trace_requests; }},
         {"dashboard.publish_interval_ms", [](auto& c) { c.dashboard.publish_interval_ms = 5; }},
         {"dashboard.event_rows", [](auto& c) { c.dashboard.event_rows = 5; }},
+        {"dashboard.graph_points", [](auto& c) { c.dashboard.graph_points = 5; }},
         {"config_reload.watch_file", [](auto& c) { c.config_reload.watch_file = !c.config_reload.watch_file; }},
         {"config_reload.debounce_ms", [](auto& c) { c.config_reload.debounce_ms = 5; }},
         {"sticky_table.shards", [](auto& c) { c.sticky_table.shards = 5; }},

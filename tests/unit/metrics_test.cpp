@@ -168,3 +168,34 @@ TEST(Metrics, StatusClassMapping) {
     EXPECT_EQ(lb::metrics::status_class(431), lb::k4xx);
     EXPECT_EQ(lb::metrics::status_class(504), lb::k5xx);
 }
+
+// Step 2.7: the dashboard's graphs plot one point per completed slice (plan IV.17).
+TEST(Metrics, SnapshotCarriesOnePointPerCompletedSlice) {
+    Metrics m({"b1", "b2"}, window_config(), origin);
+    for (int i = 0; i < 4; ++i) m.record(1, origin + 100ms, 2ms, 1ms, lb::k2xx);     // slice 0
+    m.record(1, origin + 1100ms, 40ms, 30ms, lb::k5xx);                               // slice 1
+    for (int i = 0; i < 2; ++i) m.record(2, origin + 3500ms, 7ms, 6ms, lb::k2xx);    // slice 3
+    const auto s = m.snapshot(origin + 4200ms);  // slice 4 is still filling
+    EXPECT_DOUBLE_EQ(s.slice_seconds, 1.0);
+
+    const auto& b1 = s.backends[0].slices;
+    ASSERT_EQ(b1.size(), 4u);  // slices 0..3, including the empty slice 2
+    for (std::size_t i = 0; i < 4; ++i) EXPECT_EQ(b1[i].slice, static_cast<std::int64_t>(i));
+    EXPECT_EQ(b1[0].requests, 4u);
+    EXPECT_EQ(b1[0].errors, 0u);
+    EXPECT_NEAR(b1[0].p99_ms, 2.0, 0.05);
+    EXPECT_EQ(b1[1].requests, 1u);
+    EXPECT_EQ(b1[1].errors, 1u);
+    EXPECT_NEAR(b1[1].max_ms, 40.0, 0.7);
+    EXPECT_EQ(b1[2].requests, 0u);
+    EXPECT_EQ(b1[3].requests, 0u);
+    EXPECT_EQ(s.backends[1].slices[3].requests, 2u);
+    EXPECT_EQ(s.system.slices[3].requests, 2u);  // the whole proxy too
+    EXPECT_EQ(s.system.slices[0].requests, 4u);
+
+    // Only the live window's slices: older ones are gone from the snapshot.
+    const auto later = m.snapshot(origin + 12500ms);
+    ASSERT_EQ(later.backends[0].slices.size(), 9u);  // 10 slices, the newest still filling
+    EXPECT_EQ(later.backends[0].slices.front().slice, 3);
+    EXPECT_EQ(later.backends[0].slices.back().slice, 11);
+}

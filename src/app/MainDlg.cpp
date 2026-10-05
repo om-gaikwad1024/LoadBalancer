@@ -1,8 +1,12 @@
 #include "MainDlg.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <optional>
 #include <string>
 
+#include "AdminDialogs.h"
 #include "Text.h"
 
 namespace {
@@ -10,6 +14,12 @@ namespace {
 constexpr UINT_PTR kRefreshTimer = 1;
 constexpr COLORREF kUnhealthyColor = RGB(200, 30, 30);
 constexpr COLORREF kDrainingColor = RGB(190, 120, 0);
+constexpr COLORREF kErrorColor = RGB(200, 30, 30);
+constexpr COLORREF kWarningColor = RGB(170, 105, 0);
+constexpr COLORREF kPalette[] = {RGB(31, 119, 180), RGB(255, 127, 14), RGB(44, 160, 44),  RGB(214, 39, 40),
+                                 RGB(148, 103, 189), RGB(140, 86, 75), RGB(227, 119, 194), RGB(127, 127, 127)};
+constexpr wchar_t kAllTypes[] = L"(all event types)";
+constexpr wchar_t kAllBackends[] = L"(all backends)";
 
 enum BackendColumn { kId, kGroup, kEndpoint, kState, kInFlight, kWeight, kRate, kP50, kP99, kMax, kErrors, kPool, kProbe };
 enum EventColumn { kTime, kType, kBackend, kRequest, kMessage };
@@ -34,6 +44,25 @@ CString uptime(double seconds) {
     return s;
 }
 
+// Keeps the "(all ...)" entry first and the rest in order.
+void insert_sorted(CComboBox& combo, const CString& text) {
+    int i = 1;
+    CString existing;
+    for (; i < combo.GetCount(); ++i) {
+        combo.GetLBText(i, existing);
+        if (text.Compare(existing) < 0) break;
+    }
+    combo.InsertString(i, text);
+}
+
+std::string selected_filter(CComboBox& combo) {
+    const int i = combo.GetCurSel();
+    if (i <= 0) return {};  // the "(all ...)" entry
+    CString text;
+    combo.GetLBText(i, text);
+    return app::to_utf8(text);
+}
+
 }  // namespace
 
 void SnapshotBridge::on_snapshot(std::unique_ptr<lb::DashboardSnapshot> snapshot) noexcept {
@@ -49,6 +78,18 @@ BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
     ON_WM_GETMINMAXINFO()
     ON_MESSAGE(SnapshotBridge::kMessage, &CMainDlg::OnSnapshot)
     ON_NOTIFY(NM_CUSTOMDRAW, IDC_BACKENDS, &CMainDlg::OnBackendsCustomDraw)
+    ON_NOTIFY(NM_CUSTOMDRAW, IDC_EVENTS, &CMainDlg::OnEventsCustomDraw)
+    ON_NOTIFY(LVN_ITEMCHANGED, IDC_BACKENDS, &CMainDlg::OnBackendSelected)
+    ON_CBN_SELCHANGE(IDC_EVENT_TYPE, &CMainDlg::OnFilterChanged)
+    ON_CBN_SELCHANGE(IDC_EVENT_BACKEND, &CMainDlg::OnFilterChanged)
+    ON_EN_CHANGE(IDC_EVENT_SEARCH, &CMainDlg::OnFilterChanged)
+    ON_BN_CLICKED(IDC_EVENT_PROBLEMS, &CMainDlg::OnFilterChanged)
+    ON_BN_CLICKED(IDC_ADD_BACKEND, &CMainDlg::OnAddBackend)
+    ON_BN_CLICKED(IDC_EDIT_BACKEND, &CMainDlg::OnEditBackend)
+    ON_BN_CLICKED(IDC_REMOVE_BACKEND, &CMainDlg::OnRemoveBackend)
+    ON_BN_CLICKED(IDC_DRAIN_BACKEND, &CMainDlg::OnDrainBackend)
+    ON_BN_CLICKED(IDC_UNDRAIN_BACKEND, &CMainDlg::OnUndrainBackend)
+    ON_BN_CLICKED(IDC_ROUTING, &CMainDlg::OnRoutingRules)
 END_MESSAGE_MAP()
 
 CMainDlg::CMainDlg(lb::Engine& engine, const lb::ConfigSnapshot& config, std::filesystem::path config_path,
@@ -58,12 +99,15 @@ CMainDlg::CMainDlg(lb::Engine& engine, const lb::ConfigSnapshot& config, std::fi
       config_path_(std::move(config_path)),
       refresh_ms_(config.dashboard.publish_interval_ms),
       event_rows_(config.dashboard.event_rows),
+      graph_points_(config.dashboard.graph_points),
       start_minimized_(start_minimized) {}
 
 void CMainDlg::DoDataExchange(CDataExchange* dx) {
     CDialogEx::DoDataExchange(dx);
     DDX_Control(dx, IDC_BACKENDS, backends_);
     DDX_Control(dx, IDC_EVENTS, events_);
+    DDX_Control(dx, IDC_EVENT_TYPE, event_type_);
+    DDX_Control(dx, IDC_EVENT_BACKEND, event_backend_);
 }
 
 int CMainDlg::scale(int pixels) const { return ::MulDiv(pixels, static_cast<int>(::GetDpiForWindow(m_hWnd)), 96); }
@@ -71,6 +115,15 @@ int CMainDlg::scale(int pixels) const { return ::MulDiv(pixels, static_cast<int>
 BOOL CMainDlg::OnInitDialog() {
     CDialogEx::OnInitDialog();
     setup_lists();
+    rate_graph_.Create(this, IDC_GRAPH_RATE, L"Requests per second");
+    latency_graph_.Create(this, IDC_GRAPH_LATENCY, L"p99 latency");
+    event_type_.AddString(kAllTypes);
+    event_type_.SetCurSel(0);
+    event_backend_.AddString(kAllBackends);
+    event_backend_.SetCurSel(0);
+    SetDlgItemTextW(IDC_EVENT_SEARCH, L"");
+    ::SendMessageW(GetDlgItem(IDC_EVENT_SEARCH)->m_hWnd, EM_SETCUEBANNER, TRUE,
+                   reinterpret_cast<LPARAM>(L"Search message, request id..."));
 
     // The tail is what matters (plan IV.15): p99 and max get a large bold font.
     LOGFONTW lf{};
@@ -82,6 +135,7 @@ BOOL CMainDlg::OnInitDialog() {
     GetDlgItem(IDC_MAX_LABEL)->SetFont(&tail_font_);
     SetDlgItemTextW(IDC_P99_LABEL, L"p99  –");
     SetDlgItemTextW(IDC_MAX_LABEL, L"max  –");
+    update_admin_buttons();
 
     bridge_.attach(m_hWnd);
     engine_.set_snapshot_sink(&bridge_);
@@ -94,9 +148,10 @@ BOOL CMainDlg::OnInitDialog() {
     }
     engine_running_ = true;
     SetTimer(kRefreshTimer, refresh_ms_, nullptr);
-    // Hot reload: the proxy keeps running without it, so a watch failure is only a warning.
+    // Hot reload and admin saves need the file; the proxy keeps running without them.
     if (!engine_.watch_config_file(config_path_, &error)) {
-        AfxMessageBox(L"The proxy is running, but config changes will not be picked up:\n\n" + app::from_utf8(error),
+        AfxMessageBox(L"The proxy is running, but config changes will not be picked up or saved:\n\n" +
+                          app::from_utf8(error),
                       MB_ICONWARNING | MB_OK);
     }
 
@@ -136,9 +191,11 @@ void CMainDlg::setup_lists() {
 }
 
 void CMainDlg::layout(int cx, int cy) {
-    if (backends_.GetSafeHwnd() == nullptr || cx <= 0 || cy <= 0) return;
+    if (backends_.GetSafeHwnd() == nullptr || rate_graph_.GetSafeHwnd() == nullptr || cx <= 0 || cy <= 0) return;
     const int m = scale(8);
+    const int gap = scale(6);
     const int line = scale(18);
+    const int row = scale(24);  // buttons, combo boxes
     const int big = scale(34);
     const int w = cx - 2 * m;
     int y = m;
@@ -148,17 +205,46 @@ void CMainDlg::layout(int cx, int cy) {
     GetDlgItem(IDC_MAX_LABEL)->MoveWindow(m + w / 2, y, w - w / 2, big);
     y += big;
     GetDlgItem(IDC_LATENCY_DETAIL)->MoveWindow(m, y, w, line);
-    y += line + scale(6);
+    y += line + gap;
 
-    const int lists = std::max(cy - y - m - 2 * line - scale(6), scale(100));
-    const int backend_height = lists * 2 / 5;
-    GetDlgItem(IDC_BACKENDS_CAPTION)->MoveWindow(m, y, w, line);
-    y += line;
+    // Backends caption with the admin buttons on the same row.
+    int x = m;
+    const auto place = [&](int id, int width, int height) {
+        GetDlgItem(id)->MoveWindow(x, y, width, height);
+        x += width + scale(4);
+    };
+    GetDlgItem(IDC_BACKENDS_CAPTION)->MoveWindow(x, y + scale(4), scale(70), line);  // on the buttons' baseline
+    x += scale(74);
+    place(IDC_ADD_BACKEND, scale(110), row);
+    place(IDC_EDIT_BACKEND, scale(64), row);
+    place(IDC_REMOVE_BACKEND, scale(72), row);
+    place(IDC_DRAIN_BACKEND, scale(60), row);
+    place(IDC_UNDRAIN_BACKEND, scale(124), row);
+    place(IDC_ROUTING, scale(116), row);
+    GetDlgItem(IDC_ADMIN_NOTE)->MoveWindow(x + scale(4), y + scale(3), std::max(m + w - x - scale(4), scale(40)), line);
+    y += row + scale(4);
+
+    const int remaining = std::max(cy - y - m - row - 2 * gap, scale(240));
+    const int backend_height = remaining * 26 / 100;
+    const int graph_height = remaining * 30 / 100;
     backends_.MoveWindow(m, y, w, backend_height);
-    y += backend_height + scale(6);
-    GetDlgItem(IDC_EVENTS_CAPTION)->MoveWindow(m, y, w, line);
-    y += line;
-    events_.MoveWindow(m, y, w, std::max(cy - y - m, scale(40)));
+    y += backend_height + gap;
+    rate_graph_.MoveWindow(m, y, (w - gap) / 2, graph_height);
+    latency_graph_.MoveWindow(m + (w - gap) / 2 + gap, y, w - (w - gap) / 2 - gap, graph_height);
+    y += graph_height + gap;
+
+    // Log caption with the filters on the same row.
+    x = m;
+    GetDlgItem(IDC_EVENTS_CAPTION)->MoveWindow(x, y + scale(4), scale(130), line);
+    x += scale(134);
+    place(IDC_EVENT_TYPE, scale(190), scale(300));  // a drop-down list's height includes the list
+    place(IDC_EVENT_BACKEND, scale(130), scale(300));
+    place(IDC_EVENT_SEARCH, scale(200), scale(22));
+    GetDlgItem(IDC_EVENT_PROBLEMS)->MoveWindow(x, y + scale(3), scale(110), line);
+    x += scale(114);
+    GetDlgItem(IDC_EVENT_COUNT)->MoveWindow(x, y + scale(3), std::max(m + w - x, scale(40)), line);
+    y += row + scale(4);
+    events_.MoveWindow(m, y, w, std::max(cy - y - m, scale(60)));
     Invalidate();
 }
 
@@ -170,8 +256,8 @@ void CMainDlg::OnSize(UINT type, int cx, int cy) {
 void CMainDlg::OnGetMinMaxInfo(MINMAXINFO* info) {
     CDialogEx::OnGetMinMaxInfo(info);
     if (m_hWnd != nullptr) {
-        info->ptMinTrackSize.x = scale(720);
-        info->ptMinTrackSize.y = scale(480);
+        info->ptMinTrackSize.x = scale(980);
+        info->ptMinTrackSize.y = scale(640);
     }
 }
 
@@ -181,6 +267,7 @@ LRESULT CMainDlg::OnSnapshot(WPARAM, LPARAM snapshot) {
     std::unique_ptr<lb::DashboardSnapshot> s(reinterpret_cast<lb::DashboardSnapshot*>(snapshot));
     for (auto& e : s->new_events) pending_events_.push_back(std::move(e));
     s->new_events.clear();
+    update_history(*s);  // every snapshot's slices, so none is missed between repaints
     latest_ = std::move(s);
     return 0;
 }
@@ -196,6 +283,9 @@ void CMainDlg::render() {
     render_status(*latest_);
     render_latency(*latest_);
     render_backends(*latest_);
+    render_graphs(*latest_);
+    update_backend_filter(*latest_);
+    update_admin_buttons();
     rendered_sequence_ = latest_->sequence;
 }
 
@@ -269,6 +359,7 @@ void CMainDlg::render_backends(const lb::DashboardSnapshot& s) {
                     static_cast<unsigned long long>(b.idle_connections));
         CString probe = b.last_probe_error.empty() ? CString(L"ok") : app::from_utf8(b.last_probe_error);
         if (b.health_probes == 0) probe = L"not probed yet";
+        if (b.state == lb::BackendState::Drained) probe = L"not probed (drained)";
 
         backends_.SetItemText(r, kId, app::from_utf8(b.id));
         backends_.SetItemText(r, kGroup, app::from_utf8(b.group));
@@ -288,22 +379,230 @@ void CMainDlg::render_backends(const lb::DashboardSnapshot& s) {
     backends_.Invalidate(FALSE);
 }
 
-// Newest first, capped at dashboard.event_rows.
+// ---- Graphs (plan IV.17 phase 2) --------------------------------------------------------
+
+void CMainDlg::update_history(const lb::DashboardSnapshot& s) {
+    for (const auto& series : s.metrics.backends) {
+        auto& slices = history_[series.id];
+        for (const auto& p : series.slices) slices[p.slice] = p;  // a slice seen again is replaced: it is final
+        while (slices.size() > graph_points_) slices.erase(slices.begin());
+    }
+}
+
+void CMainDlg::render_graphs(const lb::DashboardSnapshot& s) {
+    std::int64_t newest = -1;
+    for (const auto& series : s.metrics.backends) {
+        if (!series.slices.empty()) newest = std::max(newest, series.slices.back().slice);
+    }
+    const double slice_seconds = s.metrics.slice_seconds > 0 ? s.metrics.slice_seconds : 1.0;
+    std::vector<CGraphCtrl::Series> rate;
+    std::vector<CGraphCtrl::Series> latency;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::size_t color = 0;
+    for (const auto& b : s.backends) {  // current backends only, in the list's order
+        CGraphCtrl::Series r{app::from_utf8(b.id), kPalette[color % std::size(kPalette)], {}};
+        CGraphCtrl::Series l = r;
+        ++color;
+        const auto it = history_.find(b.id);
+        if (newest >= 0) {
+            for (std::int64_t slice = newest - static_cast<std::int64_t>(graph_points_) + 1; slice <= newest; ++slice) {
+                const lb::SlicePoint* p = nullptr;
+                if (it != history_.end()) {
+                    const auto found = it->second.find(slice);
+                    if (found != it->second.end()) p = &found->second;
+                }
+                r.values.push_back(p != nullptr ? static_cast<double>(p->requests) / slice_seconds : nan);
+                l.values.push_back(p != nullptr && p->requests > 0 ? p->p99_ms : nan);
+            }
+        }
+        rate.push_back(std::move(r));
+        latency.push_back(std::move(l));
+    }
+    rate_graph_.set_data(std::move(rate), graph_points_, slice_seconds, L"req/s");
+    latency_graph_.set_data(std::move(latency), graph_points_, slice_seconds, L"ms");
+}
+
+// ---- Log view (plan IV.17 phase 2: searchable, filterable) -------------------------------
+
+void CMainDlg::insert_event_row(int row, const lb::LoggedEvent& e) {
+    const CString time = e.wall_time.size() >= 23 ? app::from_utf8(e.wall_time.substr(11, 12)) : app::from_utf8(e.wall_time);
+    events_.InsertItem(row, time);
+    events_.SetItemText(row, kType, app::from_utf8(e.type));
+    events_.SetItemText(row, kBackend, app::from_utf8(e.backend));
+    events_.SetItemText(row, kRequest, app::from_utf8(e.request_id));
+    events_.SetItemText(row, kMessage, app::from_utf8(e.message));
+    events_.SetItemData(row, static_cast<DWORD_PTR>(lb::log::event_severity(e.type)));
+}
+
+// Newest first; at most dashboard.event_rows kept, whether shown or filtered out.
 void CMainDlg::render_events() {
     events_.SetRedraw(FALSE);
-    for (const auto& e : pending_events_) {
-        const CString time = e.wall_time.size() >= 23 ? app::from_utf8(e.wall_time.substr(11, 12)) : app::from_utf8(e.wall_time);
-        events_.InsertItem(0, time);
-        events_.SetItemText(0, kType, app::from_utf8(e.type));
-        events_.SetItemText(0, kBackend, app::from_utf8(e.backend));
-        events_.SetItemText(0, kRequest, app::from_utf8(e.request_id));
-        events_.SetItemText(0, kMessage, app::from_utf8(e.message));
+    for (auto& e : pending_events_) {
+        if (event_types_.insert(e.type).second) insert_sorted(event_type_, app::from_utf8(e.type));
+        if (!e.backend.empty() && event_backends_.insert(e.backend).second) {
+            insert_sorted(event_backend_, app::from_utf8(e.backend));
+        }
+        if (lb::log::matches(e, filter_)) insert_event_row(0, e);
+        all_events_.push_front(std::move(e));
+        if (all_events_.size() > event_rows_) all_events_.pop_back();
     }
     pending_events_.clear();
     while (events_.GetItemCount() > static_cast<int>(event_rows_)) events_.DeleteItem(events_.GetItemCount() - 1);
     events_.SetRedraw(TRUE);
     events_.Invalidate(FALSE);
+    update_event_count();
 }
+
+void CMainDlg::rebuild_events() {
+    events_.SetRedraw(FALSE);
+    events_.DeleteAllItems();
+    int row = 0;
+    for (const auto& e : all_events_) {
+        if (lb::log::matches(e, filter_)) insert_event_row(row++, e);
+    }
+    events_.SetRedraw(TRUE);
+    events_.Invalidate(FALSE);
+    update_event_count();
+}
+
+void CMainDlg::update_event_count() {
+    CString text;
+    text.Format(L"Showing %d of %zu events", events_.GetItemCount(), all_events_.size());
+    SetDlgItemTextW(IDC_EVENT_COUNT, text);
+}
+
+void CMainDlg::OnFilterChanged() {
+    CString search;
+    GetDlgItemTextW(IDC_EVENT_SEARCH, search);
+    filter_.type = selected_filter(event_type_);
+    filter_.backend = selected_filter(event_backend_);
+    filter_.text = app::to_utf8(search.Trim());
+    filter_.problems_only = IsDlgButtonChecked(IDC_EVENT_PROBLEMS) == BST_CHECKED;
+    rebuild_events();
+}
+
+void CMainDlg::update_backend_filter(const lb::DashboardSnapshot& s) {
+    for (const auto& b : s.backends) {
+        if (event_backends_.insert(b.id).second) insert_sorted(event_backend_, app::from_utf8(b.id));
+    }
+}
+
+void CMainDlg::OnEventsCustomDraw(NMHDR* header, LRESULT* result) {
+    auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(header);
+    *result = CDRF_DODEFAULT;
+    if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+        *result = CDRF_NOTIFYITEMDRAW;
+    } else if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+        const auto severity = static_cast<lb::log::Severity>(cd->nmcd.lItemlParam);
+        if (severity == lb::log::Severity::Error) cd->clrText = kErrorColor;
+        else if (severity == lb::log::Severity::Warning) cd->clrText = kWarningColor;
+    }
+}
+
+// ---- Admin console (plan IV.17 phase 2) --------------------------------------------------
+
+const lb::BackendStats* CMainDlg::selected_backend() const {
+    const int row = backends_.GetNextItem(-1, LVNI_SELECTED);
+    if (!latest_ || row < 0 || row >= static_cast<int>(latest_->backends.size())) return nullptr;
+    return &latest_->backends[static_cast<std::size_t>(row)];
+}
+
+std::vector<std::string> CMainDlg::group_names() const {
+    std::vector<std::string> names;
+    if (latest_ && latest_->config) {
+        for (const auto& g : latest_->config->groups) names.push_back(g.name);
+    }
+    return names;
+}
+
+void CMainDlg::update_admin_buttons() {
+    const bool available = latest_ && latest_->admin_available && latest_->config;
+    const lb::BackendStats* b = available ? selected_backend() : nullptr;
+    const bool in_service = b != nullptr && (b->state == lb::BackendState::Healthy || b->state == lb::BackendState::Unhealthy);
+    GetDlgItem(IDC_ADD_BACKEND)->EnableWindow(available);
+    GetDlgItem(IDC_ROUTING)->EnableWindow(available);
+    GetDlgItem(IDC_EDIT_BACKEND)->EnableWindow(b != nullptr);
+    GetDlgItem(IDC_REMOVE_BACKEND)->EnableWindow(b != nullptr);
+    GetDlgItem(IDC_DRAIN_BACKEND)->EnableWindow(in_service);
+    GetDlgItem(IDC_UNDRAIN_BACKEND)->EnableWindow(b != nullptr && !in_service);
+    CString current;
+    GetDlgItemTextW(IDC_ADMIN_NOTE, current);
+    if (latest_ && !latest_->admin_available && current.IsEmpty()) {
+        SetDlgItemTextW(IDC_ADMIN_NOTE, L"Admin edits need the config file (start with --config)");
+    }
+}
+
+void CMainDlg::OnBackendSelected(NMHDR*, LRESULT* result) {
+    update_admin_buttons();
+    *result = 0;
+}
+
+void CMainDlg::note(const std::string& text) { SetDlgItemTextW(IDC_ADMIN_NOTE, L"Saved: " + app::from_utf8(text)); }
+
+void CMainDlg::report(const lb::AdminResult& result) {
+    if (result.ok) {
+        note(result.summary);
+    } else {
+        AfxMessageBox(L"Not applied:\n\n" + app::from_utf8(result.error), MB_ICONWARNING | MB_OK);
+    }
+}
+
+void CMainDlg::OnAddBackend() {
+    if (!latest_ || !latest_->config) return;
+    CBackendDlg dlg(this, group_names(), std::nullopt,
+                    [this](const lb::BackendEdit& e) { return engine_.admin_add_backend(e); });
+    if (dlg.DoModal() == IDOK) note(dlg.summary());
+}
+
+void CMainDlg::OnEditBackend() {
+    const lb::BackendStats* b = selected_backend();
+    if (b == nullptr || !latest_->config) return;
+    std::optional<lb::BackendEdit> existing;
+    for (const auto& g : latest_->config->groups) {
+        for (const auto& c : g.backends) {
+            if (c.id == b->id) existing = lb::BackendEdit{g.name, c.id, c.address, c.port, c.weight};
+        }
+    }
+    if (!existing) return;
+    CBackendDlg dlg(this, group_names(), existing,
+                    [this](const lb::BackendEdit& e) { return engine_.admin_update_backend(e); });
+    if (dlg.DoModal() == IDOK) note(dlg.summary());
+}
+
+void CMainDlg::OnRemoveBackend() {
+    const lb::BackendStats* b = selected_backend();
+    if (b == nullptr) return;
+    const std::string id = b->id;
+    const CString question = L"Remove backend " + app::from_utf8(id) +
+                             L"?\n\nIt gets no new requests at once; requests already in flight finish. "
+                             L"The change is saved to the config file.";
+    if (AfxMessageBox(question, MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    CWaitCursor wait;
+    report(engine_.admin_remove_backend(id));
+}
+
+void CMainDlg::OnDrainBackend() {
+    const lb::BackendStats* b = selected_backend();
+    if (b == nullptr) return;
+    CWaitCursor wait;
+    report(engine_.admin_drain_backend(b->id));
+}
+
+void CMainDlg::OnUndrainBackend() {
+    const lb::BackendStats* b = selected_backend();
+    if (b == nullptr) return;
+    CWaitCursor wait;
+    report(engine_.admin_undrain_backend(b->id));
+}
+
+void CMainDlg::OnRoutingRules() {
+    if (!latest_ || !latest_->config) return;
+    CRoutingDlg dlg(this, group_names(), latest_->config->routing,
+                    [this](const lb::RoutingConfig& r) { return engine_.admin_set_routing(r); });
+    if (dlg.DoModal() == IDOK) note(dlg.summary());
+}
+
+// ---- Rows, shutdown -----------------------------------------------------------------------
 
 void CMainDlg::OnBackendsCustomDraw(NMHDR* header, LRESULT* result) {
     auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(header);

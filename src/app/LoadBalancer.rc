@@ -3,19 +3,93 @@
 
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
-// Operator dashboard, phase 1 (plan IV.17). Positions are a starting point; the dialog
-// lays its controls out again whenever it is resized.
-IDD_MAIN DIALOGEX 0, 0, 660, 430
+// Operator dashboard (plan IV.17). Positions are a starting point; the dialog lays its
+// controls out again whenever it is resized. The two graphs are created at run time.
+IDD_MAIN DIALOGEX 0, 0, 700, 520
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME
 CAPTION "Load Balancer"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    LTEXT           "Starting...", IDC_STATUS, 7, 7, 646, 10
+    LTEXT           "Starting...", IDC_STATUS, 7, 7, 686, 10
     LTEXT           "p99", IDC_P99_LABEL, 7, 21, 220, 20
     LTEXT           "max", IDC_MAX_LABEL, 233, 21, 220, 20
-    LTEXT           "", IDC_LATENCY_DETAIL, 7, 44, 646, 10
-    LTEXT           "Backends", IDC_BACKENDS_CAPTION, 7, 58, 200, 10
-    CONTROL         "", IDC_BACKENDS, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 7, 70, 646, 140
-    LTEXT           "Events (newest first)", IDC_EVENTS_CAPTION, 7, 216, 200, 10
-    CONTROL         "", IDC_EVENTS, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 7, 228, 646, 195
+    LTEXT           "", IDC_LATENCY_DETAIL, 7, 44, 686, 10
+    LTEXT           "Backends", IDC_BACKENDS_CAPTION, 7, 58, 60, 10
+    PUSHBUTTON      "&Add backend...", IDC_ADD_BACKEND, 70, 56, 64, 13
+    PUSHBUTTON      "&Edit...", IDC_EDIT_BACKEND, 136, 56, 40, 13
+    PUSHBUTTON      "&Remove", IDC_REMOVE_BACKEND, 178, 56, 40, 13
+    PUSHBUTTON      "&Drain", IDC_DRAIN_BACKEND, 220, 56, 40, 13
+    PUSHBUTTON      "Return to ser&vice", IDC_UNDRAIN_BACKEND, 262, 56, 70, 13
+    PUSHBUTTON      "Routing r&ules...", IDC_ROUTING, 334, 56, 66, 13
+    LTEXT           "", IDC_ADMIN_NOTE, 404, 58, 289, 10
+    CONTROL         "", IDC_BACKENDS, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 7, 72, 686, 110
+    LTEXT           "Events (newest first)", IDC_EVENTS_CAPTION, 7, 330, 90, 10
+    COMBOBOX        IDC_EVENT_TYPE, 100, 328, 130, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    COMBOBOX        IDC_EVENT_BACKEND, 234, 328, 90, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_EVENT_SEARCH, 328, 328, 140, 12, ES_AUTOHSCROLL
+    CONTROL         "Problems only", IDC_EVENT_PROBLEMS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 472, 329, 64, 10
+    LTEXT           "", IDC_EVENT_COUNT, 540, 330, 153, 10
+    CONTROL         "", IDC_EVENTS, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 7, 344, 686, 169
+END
+
+// Add or edit one backend (plan IV.17 admin). OK validates through the engine; on an error
+// the dialog stays open and shows it.
+IDD_BACKEND DIALOGEX 0, 0, 260, 132
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Backend"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Group", -1, 7, 9, 50, 10
+    COMBOBOX        IDC_BK_GROUP, 60, 7, 193, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Id", -1, 7, 26, 50, 10
+    EDITTEXT        IDC_BK_ID, 60, 24, 193, 12, ES_AUTOHSCROLL
+    LTEXT           "Address (IPv4)", -1, 7, 43, 50, 10
+    EDITTEXT        IDC_BK_ADDRESS, 60, 41, 193, 12, ES_AUTOHSCROLL
+    LTEXT           "Port", -1, 7, 60, 50, 10
+    EDITTEXT        IDC_BK_PORT, 60, 58, 60, 12, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Weight", -1, 130, 60, 30, 10
+    EDITTEXT        IDC_BK_WEIGHT, 163, 58, 40, 12, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "", IDC_BK_ERROR, 7, 76, 246, 30
+    DEFPUSHBUTTON   "OK", IDOK, 149, 111, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 203, 111, 50, 14
+END
+
+// Routing rules (plan IV.8), tried top to bottom; the first match wins.
+IDD_ROUTING DIALOGEX 0, 0, 420, 230
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Routing rules"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Default group (no rule matches)", -1, 7, 9, 110, 10
+    COMBOBOX        IDC_RT_DEFAULT, 120, 7, 120, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Rules, first match wins:", -1, 7, 26, 200, 10
+    CONTROL         "", IDC_RT_RULES, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 7, 38, 346, 140
+    PUSHBUTTON      "&Add...", IDC_RT_ADD, 360, 38, 53, 14
+    PUSHBUTTON      "&Edit...", IDC_RT_EDIT, 360, 56, 53, 14
+    PUSHBUTTON      "&Remove", IDC_RT_REMOVE, 360, 74, 53, 14
+    PUSHBUTTON      "Move &up", IDC_RT_UP, 360, 98, 53, 14
+    PUSHBUTTON      "Move &down", IDC_RT_DOWN, 360, 116, 53, 14
+    LTEXT           "", IDC_RT_ERROR, 7, 182, 406, 26
+    DEFPUSHBUTTON   "Save", IDOK, 309, 209, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 363, 209, 50, 14
+END
+
+IDD_RULE DIALOGEX 0, 0, 260, 128
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Routing rule"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Id", -1, 7, 9, 50, 10
+    EDITTEXT        IDC_RU_ID, 60, 7, 193, 12, ES_AUTOHSCROLL
+    LTEXT           "Match", -1, 7, 26, 50, 10
+    COMBOBOX        IDC_RU_TYPE, 60, 24, 193, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Header / cookie", -1, 7, 43, 52, 10
+    EDITTEXT        IDC_RU_FIELD, 60, 41, 193, 12, ES_AUTOHSCROLL
+    LTEXT           "Value / path", -1, 7, 60, 50, 10
+    EDITTEXT        IDC_RU_VALUE, 60, 58, 193, 12, ES_AUTOHSCROLL
+    CONTROL         "Any value (present is enough)", IDC_RU_ANY, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 60, 74, 193, 10
+    LTEXT           "Send to group", -1, 7, 91, 50, 10
+    COMBOBOX        IDC_RU_GROUP, 60, 89, 193, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 149, 107, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 203, 107, 50, 14
 END

@@ -9,6 +9,10 @@ add_executable(LoadBalancer WIN32
   LoadBalancerApp.cpp
   MainDlg.h
   MainDlg.cpp
+  GraphCtrl.h
+  GraphCtrl.cpp
+  AdminDialogs.h
+  AdminDialogs.cpp
   LoadBalancer.rc
 )
 

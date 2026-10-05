@@ -161,6 +161,11 @@ MetricsSnapshot Metrics::snapshot(TimePoint now) const {
     std::vector<std::array<std::uint64_t, kStatusClasses>> status_all(n), status_win(n);
     for (auto& a : status_all) a.fill(0);
     for (auto& a : status_win) a.fill(0);
+    // Per completed slice of the window, for the graphs: index = epoch - oldest.
+    const std::size_t slices = config_.window_slices;
+    std::vector<std::vector<HistogramData>> slice_total(n, std::vector<HistogramData>(slices));
+    std::vector<std::vector<std::array<std::uint64_t, kStatusClasses>>> slice_status(
+        n, std::vector<std::array<std::uint64_t, kStatusClasses>>(slices, std::array<std::uint64_t, kStatusClasses>{}));
 
     {
         std::lock_guard lock(recorders_mutex_);
@@ -177,8 +182,12 @@ MetricsSnapshot Metrics::snapshot(TimePoint now) const {
                     if (e < oldest || e > current) continue;
                     slice.total.add_to(total_win[i]);
                     slice.backend.add_to(backend_win[i]);
+                    const auto k = static_cast<std::size_t>(e - oldest);
+                    slice.total.add_to(slice_total[i][k]);
                     for (std::size_t c = 0; c < kStatusClasses; ++c) {
-                        status_win[i][c] += slice.status[c].load(std::memory_order_relaxed);
+                        const auto v = slice.status[c].load(std::memory_order_relaxed);
+                        status_win[i][c] += v;
+                        slice_status[i][k][c] += v;
                     }
                 }
             }
@@ -194,6 +203,7 @@ MetricsSnapshot Metrics::snapshot(TimePoint now) const {
 
     MetricsSnapshot out;
     out.window_seconds = config_.window_slices * slice_s;
+    out.slice_seconds = slice_s;
     const auto fill = [&](std::size_t i, SeriesMetrics& m) {
         m.id = i == 0 ? "*" : ids[i - 1];
         m.total_window = total_win[i].stats();
@@ -208,6 +218,20 @@ MetricsSnapshot Metrics::snapshot(TimePoint now) const {
         m.error_rate = requests > 0 ? static_cast<double>(status_win[i][k5xx] + status_win[i][kAborted]) /
                                           static_cast<double>(requests)
                                     : 0;
+        // Completed slices only (the current one is still filling), never before the start.
+        for (std::size_t k = 0; k < slices; ++k) {
+            const std::int64_t epoch = oldest + static_cast<std::int64_t>(k);
+            if (epoch < 0 || epoch >= current) continue;
+            SlicePoint p;
+            p.slice = epoch;
+            for (auto c : slice_status[i][k]) p.requests += c;
+            p.errors = slice_status[i][k][k5xx] + slice_status[i][k][kAborted];
+            const LatencyStats st = slice_total[i][k].stats();
+            p.p50_ms = st.p50_ms;
+            p.p99_ms = st.p99_ms;
+            p.max_ms = st.max_ms;
+            m.slices.push_back(p);
+        }
     };
     fill(0, out.system);
     for (std::size_t i = 1; i < n; ++i) {

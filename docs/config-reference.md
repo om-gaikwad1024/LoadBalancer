@@ -134,7 +134,7 @@ tipped it over), `backend_marked_healthy` (`successes`, `check`), `no_backend_av
 (`status`, `reason`), `response_aborted`, `timeout` (client-side timeouts except keep-alive idle),
 `retry` and `retry_result` (stale pooled connection), `config_watch_started`,
 `config_reload_accepted` (`source`, `added`, `removed`, `reweighted`), `config_reload_rejected`
-(`source`, `errors`), `health_checks_not_restarted`, `sticky_reassigned` (`group`, `from`, `to`,
+(`source`, `errors`), `health_checks_not_restarted`, `admin_edit`, `admin_save_failed`, `sticky_reassigned` (`group`, `from`, `to`,
 `reason`), `drain_started` (`source`: `api` or `config`, `in_flight`, `timeout_ms`), `drain_completed`
 (`duration_ms`), `drain_timed_out` (`aborted`), `drain_aborted` (per request), `drain_cancelled`
 (`source`, `was`), `drain_ended` (removed from the config while draining), `sticky_table_full` (at most once per maintenance interval, with how many sessions
@@ -158,7 +158,45 @@ can't be watched, a warning says so and the proxy keeps running without hot relo
 | Field | Type | Valid range | Meaning |
 |---|---|---|---|
 | `dashboard.publish_interval_ms` | integer | 50–10000 | How often the engine publishes a snapshot; the UI repaints at the same rate |
-| `dashboard.event_rows` | integer | 10–100000 | Rows kept in the live event list (newest first) |
+| `dashboard.event_rows` | integer | 10–100000 | Events kept for the log view (newest first), whether shown or filtered out |
+| `dashboard.graph_points` | integer | 10–3600 | Points per graph line: one per metrics slice, so a graph spans `graph_points × metrics.slice_ms` (120 × 1 s = the last 2 minutes) |
+
+What the window shows, top to bottom:
+- **Status line**: listen address, workers, uptime, backends by state, open connections, request
+  rate and error rate over the live window, and reloads applied and rejected.
+- **p99 and max** in large type, since the tail is what matters, then p50, p95, mean, backend-only
+  time and the since-start figures (plan IV.15).
+- **Backends**: state (unhealthy in red, draining and drained in amber), in-flight requests, weight,
+  request rate, p50/p99/max, error rate, pooled connections and the last probe result.
+- **Graphs** (GDI, double-buffered): requests per second and p99 latency per backend, one point
+  per metrics slice. A slice with no requests has no p99 point. The engine sends each snapshot's
+  completed slices and the window keeps the newest `graph_points` of them.
+- **Log**: the newest events with severity colors (errors red, warnings amber). Filter by event
+  type and backend, search the message, type, backend or request id (case-insensitive, so pasting
+  an `X-Request-Id` shows that request's events), or tick **Problems only** for warnings and errors.
+
+### Admin console (plan IV.17, IV.14)
+Buttons above the backend list: **Add backend**, **Edit** (address, port, weight), **Remove**
+(after a confirmation), **Drain**, **Return to service** and **Routing rules** (default group, and
+rules to add, edit, remove and reorder). The buttons that act on one backend need a row selected.
+
+Every admin action is a config change. The proxy edits the config file's document, applies it
+through the same validation and apply path as any reload, and saves the file only if that path
+accepts it. The save writes a temporary file and renames it over the config, so it is atomic, and
+the file watcher recognizes the saved content and does not reload it a second time. A rejected edit
+changes nothing, in the proxy or the file. Its error names the JSON field
+(e.g. `/groups/0/backends/2/port: must be between 1 and 65535`), and the dialog stays open showing
+it. Notes:
+- Admin edits need the file given with `--config`. If that file no longer holds the active config
+  (it was edited and not applied, or it was rejected), they refuse instead of overwriting those
+  changes; fix or reload the file first.
+- The file is saved in a standard layout (2-space indent) with its fields in their original order.
+- **Drain** saves `"drain": "start"` (the drain survives a restart). **Return to service** saves
+  `"drain": "keep"` and returns the backend at once.
+- A backend's id and group can't be edited: remove it and add it again. The id keys its live state.
+- Each successful edit is logged as `admin_edit`; a save that fails after the change was applied
+  is logged as `admin_save_failed` (the proxy runs the new config, the file still has the old one).
+- Circuit breaker view and reset come with the circuit breaker (phase 3).
 
 ## `config_reload`: hot reload (plan IV.14)
 `LoadBalancer.exe` and `lb_console` watch the file given with `--config`. The watcher listens on the

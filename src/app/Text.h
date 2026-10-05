@@ -2,6 +2,7 @@
 
 #include "framework.h"
 
+#include <string>
 #include <string_view>
 
 namespace app {
@@ -14,6 +15,14 @@ inline CString from_utf8(std::string_view text) {
     CString out;
     ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.GetBuffer(n), n);
     out.ReleaseBuffer(n);
+    return out;
+}
+
+inline std::string to_utf8(const CString& text) {
+    if (text.IsEmpty()) return {};
+    const int n = ::WideCharToMultiByte(CP_UTF8, 0, text.GetString(), text.GetLength(), nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<std::size_t>(n), '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, text.GetString(), text.GetLength(), out.data(), n, nullptr, nullptr);
     return out;
 }
 

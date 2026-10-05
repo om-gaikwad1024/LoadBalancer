@@ -47,7 +47,8 @@
                   },
     "dashboard":  {
                       "publish_interval_ms":  500,
-                      "event_rows":  500
+                      "event_rows":  500,
+                      "graph_points":  120
                   },
     "timeouts":  {
                      "client_header_ms":  10000,

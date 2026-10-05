@@ -50,7 +50,7 @@ inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& b
         {"config_reload", {{"watch_file", false}, {"debounce_ms", 200}}},
         {"balancing", {{"response_time_decay_ms", 2000}, {"response_time_expiry_ms", 10000}}},
         {"sticky_table", {{"shards", 8}, {"max_entries", 10000}}},
-        {"dashboard", {{"publish_interval_ms", 500}, {"event_rows", 500}}},
+        {"dashboard", {{"publish_interval_ms", 500}, {"event_rows", 500}, {"graph_points", 120}}},
         {"event_log",
          {{"path", ""},  // in memory only unless a test asks for a file
           {"max_file_bytes", 1048576},
