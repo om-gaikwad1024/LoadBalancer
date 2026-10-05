@@ -10,6 +10,7 @@ namespace lb {
 enum class TraceStep : std::uint8_t {
     RequestReceived,    // request head parsed
     GroupRouted,        // content routing chose the group (plan IV.8)
+    AffinityChecked,    // sticky lookup in that group (plan IV.9); only for groups with sticky sessions
     BackendSelected,
     BackendConnected,
     RequestForwarded,   // whole request sent to the backend

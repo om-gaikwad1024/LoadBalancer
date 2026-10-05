@@ -120,7 +120,8 @@ void append_backend_request_head(std::string& out, const http::RequestHead& requ
 }
 
 void append_client_response_head(std::string& out, const http::ResponseHead& response, ClientBodyMode mode,
-                                 bool keep_alive, http::Version client_version, std::string_view request_id) {
+                                 bool keep_alive, http::Version client_version, std::string_view request_id,
+                                 std::string_view set_cookie) {
     out.append("HTTP/1.1 ");
     out.append(std::to_string(response.status));
     out.push_back(' ');
@@ -138,6 +139,7 @@ void append_client_response_head(std::string& out, const http::ResponseHead& res
         append_field(out, f.name, f.value);
     }
     if (!request_id.empty()) append_field(out, "X-Request-Id", request_id);
+    if (!set_cookie.empty()) append_field(out, "Set-Cookie", set_cookie);
 
     if (mode == ClientBodyMode::ContentLength) {
         append_field(out, "Content-Length", std::to_string(response.content_length));

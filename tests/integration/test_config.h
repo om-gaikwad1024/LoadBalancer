@@ -48,6 +48,7 @@ inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& b
         {"metrics", {{"slice_ms", 1000}, {"window_slices", 10}, {"max_backend_series", 64}}},
         {"config_reload", {{"watch_file", false}, {"debounce_ms", 200}}},
         {"balancing", {{"response_time_decay_ms", 2000}, {"response_time_expiry_ms", 10000}}},
+        {"sticky_table", {{"shards", 8}, {"max_entries", 10000}}},
         {"dashboard", {{"publish_interval_ms", 500}, {"event_rows", 500}}},
         {"event_log",
          {{"path", ""},  // in memory only unless a test asks for a file
@@ -70,6 +71,7 @@ inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& b
          {{{"name", "web"},
            {"strategy", "round_robin"},
            {"host_header", "preserve"},
+           {"sticky", {{"mode", "off"}, {"cookie", nullptr}, {"ttl_ms", 60000}}},
            // First probes are staggered over the first interval, so with 60 s no probe
            // touches tests that are not about health checks; those set short intervals.
            {"health",

@@ -26,6 +26,8 @@ std::vector<std::string> restart_only_changes(const ConfigSnapshot& a, const Con
     check(a.dashboard.event_rows != b.dashboard.event_rows, "dashboard.event_rows");
     check(a.config_reload.watch_file != b.config_reload.watch_file, "config_reload.watch_file");
     check(a.config_reload.debounce_ms != b.config_reload.debounce_ms, "config_reload.debounce_ms");
+    check(a.sticky_table.shards != b.sticky_table.shards, "sticky_table.shards");
+    check(a.sticky_table.max_entries != b.sticky_table.max_entries, "sticky_table.max_entries");
     return changed;
 }
 

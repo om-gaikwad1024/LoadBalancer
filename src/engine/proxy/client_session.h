@@ -110,6 +110,13 @@ private:
     // Gives the backend connection back to its pool (reusable) or closes it, freeing the slot.
     void close_backend(bool reusable = false) noexcept;
     void close_all(bool abortive) noexcept;
+    // Plan IV.9: the session's backend in this group if it is still eligible, otherwise one
+    // from the balancer (and the session is mapped to it).
+    std::shared_ptr<backend::BackendRuntime> pick_backend(balance::GroupBalancer& group, const GroupConfig* config,
+                                                          const http::RequestHead& request,
+                                                          const balance::PickContext& pick);
+    // Application cookie mode: a session cookie the backend sets maps to that backend.
+    void learn_sticky_cookie(const http::ResponseHead& response);
     // `detail` goes only to the debug event log (event_log.trace_requests).
     void trace(TraceStep step, int status = 0, std::string_view detail = {}) const noexcept;
 
@@ -195,6 +202,11 @@ private:
     TimePoint backend_ready_at_{};  // backend connection ready (connected or reused)
     TimePoint backend_done_at_{};   // backend response fully received
     std::size_t metrics_series_ = 0;  // backend series to charge; 0 = whole-proxy only
+
+    // Session affinity for the current request (plan IV.9).
+    const StickyConfig* sticky_ = nullptr;  // the routed group's settings, when it is sticky
+    std::string sticky_group_;
+    std::string sticky_set_cookie_;  // Set-Cookie value for the response (inserted cookie mode)
     bool outcome_recorded_ = false;
     http::Version client_version_ = http::Version::Http11;
     ClientBodyMode client_mode_ = ClientBodyMode::None;

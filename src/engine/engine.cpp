@@ -108,6 +108,8 @@ public:
         backends_.load(config, [this](const std::string& id) { return metrics_->register_series(id); });
         ctx_.metrics = metrics_.get();
         ctx_.events = events_.get();
+        sticky_ = std::make_unique<affinity::StickyTable>(config->sticky_table);
+        ctx_.sticky = sticky_.get();
 
         if (!winsock_.init(error) || !port_.create(error) || !ext_.load(error)) return false;
 
@@ -117,7 +119,7 @@ public:
         workers_.start(port_, threads == 0 ? 1 : threads);
         timers_.start();
         maintenance_.start(L"lb-maintenance", std::chrono::milliseconds(config->maintenance.interval_ms),
-                           [this] { backends_.sweep(Clock::now()); });
+                           [this] { maintain(); });
         started_ = true;
 
         if (!start_health_checks(*backends_.topology(), error)) {
@@ -241,6 +243,11 @@ public:
         s.events_dropped = events_ ? events_->dropped() : 0;
         s.reloads_accepted = reloads_accepted_.load();
         s.reloads_rejected = reloads_rejected_.load();
+        s.sticky_entries = sticky_ ? sticky_->size() : 0;
+        s.sticky_hits = counters_.sticky_hits.load();
+        s.sticky_assignments = counters_.sticky_assignments.load();
+        s.sticky_reassignments = counters_.sticky_reassignments.load();
+        s.sticky_not_stored = sticky_ ? sticky_->not_stored() : 0;
         return s;
     }
 
@@ -374,6 +381,24 @@ public:
     void set_snapshot_sink(SnapshotSink* sink) noexcept { sink_.store(sink, std::memory_order_release); }
 
 private:
+    // Maintenance thread (plan V): idle pooled connections past their timeout, expired sticky
+    // mappings, and one event per interval if new sessions could not be stored.
+    void maintain() {
+        const TimePoint now = Clock::now();
+        backends_.sweep(now);
+        sticky_->sweep(now);
+        const std::uint64_t not_stored = sticky_->not_stored();
+        if (not_stored != sticky_not_stored_reported_) {
+            const auto limit = config_.current()->sticky_table.max_entries;
+            events_->emit("sticky_table_full",
+                          std::to_string(not_stored - sticky_not_stored_reported_) +
+                              " new sessions were not made sticky: the sticky table is full (sticky_table.max_entries " +
+                              std::to_string(limit) + ")",
+                          {{"not_stored", not_stored - sticky_not_stored_reported_}, {"max_entries", limit}});
+            sticky_not_stored_reported_ = not_stored;
+        }
+    }
+
     static std::vector<std::string> backend_ids(const ConfigSnapshot& config) {
         std::vector<std::string> ids;
         for (const auto& g : config.groups) {
@@ -488,6 +513,8 @@ private:
     TimePoint origin_{};
     std::unique_ptr<log::EventLog> events_;
     std::unique_ptr<metrics::Metrics> metrics_;
+    std::unique_ptr<affinity::StickyTable> sticky_;
+    std::uint64_t sticky_not_stored_reported_ = 0;  // maintenance thread only
     std::atomic<SnapshotSink*> sink_{nullptr};
     std::string listen_address_;
     std::uint64_t publish_sequence_ = 0;      // publisher thread only

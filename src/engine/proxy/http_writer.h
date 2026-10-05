@@ -29,8 +29,10 @@ bool is_hop_by_hop(std::string_view name) noexcept;
 void append_backend_request_head(std::string& out, const http::RequestHead& request, const ForwardingContext& fwd);
 
 // request_id: added as X-Request-Id (replacing any the backend sent), so a client can quote it.
+// `set_cookie`, if not empty, is added as one more Set-Cookie field (the proxy's sticky cookie).
 void append_client_response_head(std::string& out, const http::ResponseHead& response, ClientBodyMode mode,
-                                 bool keep_alive, http::Version client_version, std::string_view request_id);
+                                 bool keep_alive, http::Version client_version, std::string_view request_id,
+                                 std::string_view set_cookie = {});
 
 void append_chunk(std::string& out, std::string_view data);
 void append_last_chunk(std::string& out);

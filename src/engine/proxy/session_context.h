@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "affinity/sticky_table.h"
 #include "backend/registry.h"
 #include "config/config_store.h"
 #include "core/timer_service.h"
@@ -40,6 +41,9 @@ struct EngineCounters {
     std::atomic<std::uint64_t> backends_marked_up{0};
     std::atomic<std::uint64_t> client_timeouts{0};   // header, body, keep-alive idle, write
     std::atomic<std::uint64_t> backend_timeouts{0};  // connect, response, idle
+    std::atomic<std::uint64_t> sticky_hits{0};          // request went to its session's backend
+    std::atomic<std::uint64_t> sticky_assignments{0};   // a new session was mapped to a backend
+    std::atomic<std::uint64_t> sticky_reassignments{0};  // its backend was ineligible or gone: moved
 };
 
 // Live sessions, so shutdown can reach them. Touched only when a connection opens or
@@ -73,6 +77,7 @@ struct SessionContext {
     const RequestIdGenerator* request_ids = nullptr;
     metrics::Metrics* metrics = nullptr;
     log::EventLog* events = nullptr;
+    affinity::StickyTable* sticky = nullptr;
 };
 
 }  // namespace lb::proxy

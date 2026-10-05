@@ -104,6 +104,8 @@ TEST(ReloadRules, EachRestartOnlyFieldIsNamed) {
         {"dashboard.event_rows", [](auto& c) { c.dashboard.event_rows = 5; }},
         {"config_reload.watch_file", [](auto& c) { c.config_reload.watch_file = !c.config_reload.watch_file; }},
         {"config_reload.debounce_ms", [](auto& c) { c.config_reload.debounce_ms = 5; }},
+        {"sticky_table.shards", [](auto& c) { c.sticky_table.shards = 5; }},
+        {"sticky_table.max_entries", [](auto& c) { c.sticky_table.max_entries = 5; }},
     };
     for (const auto& tc : cases) {
         auto next = base_config();
@@ -126,6 +128,9 @@ TEST(ReloadRules, LiveFieldsAreNotRestartOnly) {
     next.buffers.client_read_bytes = 1024;
     next.routing.default_group = "web";
     next.trusted_proxies.push_back({0x0A000000u, 0xFF000000u});
+    next.groups[0].sticky.mode = lb::StickyConfig::Mode::InsertedCookie;  // sticky settings per group
+    next.groups[0].sticky.cookie = "lb";
+    next.groups[0].sticky.ttl_ms = 5000;
     EXPECT_TRUE(lb::restart_only_changes(base_config(), next).empty());
 }
 

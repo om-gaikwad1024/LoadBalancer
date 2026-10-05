@@ -70,7 +70,12 @@ void write_metrics(const lb::Engine& engine, const std::string& path) {
                   {"backend_timeouts", s.backend_timeouts},
                   {"events_dropped", s.events_dropped},
                   {"reloads_accepted", s.reloads_accepted},
-                  {"reloads_rejected", s.reloads_rejected}};
+                  {"reloads_rejected", s.reloads_rejected},
+                  {"sticky_entries", s.sticky_entries},
+                  {"sticky_hits", s.sticky_hits},
+                  {"sticky_assignments", s.sticky_assignments},
+                  {"sticky_reassignments", s.sticky_reassignments},
+                  {"sticky_not_stored", s.sticky_not_stored}};
     j["backend_states"] = nlohmann::json::array();
     for (const auto& b : engine.backend_stats()) {
         j["backend_states"].push_back({{"id", b.id},

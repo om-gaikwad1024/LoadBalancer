@@ -29,6 +29,7 @@ json good_config() {
       "metrics": { "slice_ms": 1000, "window_slices": 10, "max_backend_series": 64 },
       "config_reload": { "watch_file": true, "debounce_ms": 250 },
       "balancing": { "response_time_decay_ms": 5000, "response_time_expiry_ms": 20000 },
+      "sticky_table": { "shards": 16, "max_entries": 50000 },
       "dashboard": { "publish_interval_ms": 250, "event_rows": 300 },
       "event_log": { "path": "logs/events.jsonl", "max_file_bytes": 1048576, "max_files": 3, "max_queue": 1000,
                      "recent_events": 200, "trace_requests": true },
@@ -38,12 +39,14 @@ json good_config() {
       "trusted_proxies": [ "10.0.0.0/8", "192.168.1.7" ],
       "groups": [
         { "name": "web", "strategy": "round_robin", "host_header": "preserve",
+          "sticky": { "mode": "inserted_cookie", "cookie": "lb_session", "ttl_ms": 600000 },
           "health": { "type": "http", "path": "/healthz", "interval_ms": 2000, "timeout_ms": 500,
                       "unhealthy_threshold": 3, "healthy_threshold": 2 },
           "backends": [
             { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 3 },
             { "id": "web-2", "address": "127.0.0.2", "port": 9002, "weight": 1 } ] },
         { "name": "api", "strategy": "least_connections", "host_header": "backend",
+          "sticky": { "mode": "off", "cookie": null, "ttl_ms": 1000 },
           "health": { "type": "tcp", "path": "/", "interval_ms": 1000, "timeout_ms": 1000,
                       "unhealthy_threshold": 1, "healthy_threshold": 5 },
           "backends": [
@@ -140,6 +143,13 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.config_reload.debounce_ms, 250u);
     EXPECT_EQ(c.balancing.response_time_decay_ms, 5000u);
     EXPECT_EQ(c.balancing.response_time_expiry_ms, 20000u);
+    EXPECT_EQ(c.sticky_table.shards, 16u);
+    EXPECT_EQ(c.sticky_table.max_entries, 50000u);
+    EXPECT_EQ(c.groups[0].sticky.mode, lb::StickyConfig::Mode::InsertedCookie);
+    EXPECT_EQ(c.groups[0].sticky.cookie, "lb_session");
+    EXPECT_EQ(c.groups[0].sticky.ttl_ms, 600000u);
+    EXPECT_EQ(c.groups[1].sticky.mode, lb::StickyConfig::Mode::Off);
+    EXPECT_TRUE(c.groups[1].sticky.cookie.empty());
     EXPECT_EQ(c.dashboard.publish_interval_ms, 250u);
     EXPECT_EQ(c.dashboard.event_rows, 300u);
     EXPECT_EQ(c.event_log.path, "logs/events.jsonl");
@@ -318,6 +328,15 @@ INSTANTIATE_TEST_SUITE_P(WrongType, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/groups/0/backends/1", 5, "expected an object"},
     BadValueCase{"/groups/0/backends/0/weight", "3", "expected an integer"},
     BadValueCase{"/routing/default_group", 5, "expected a string"},
+    BadValueCase{"/groups/0/sticky", "on", "expected an object"},
+    BadValueCase{"/groups/0/sticky/mode", "source_ip", "must be \"off\", \"application_cookie\" or \"inserted_cookie\""},
+    BadValueCase{"/groups/0/sticky/cookie", nullptr, "cookie name"},
+    BadValueCase{"/groups/0/sticky/cookie", "lb session", "cookie name"},
+    BadValueCase{"/groups/1/sticky/cookie", "SESSIONID", "must be null when mode is \"off\""},
+    BadValueCase{"/groups/0/sticky/ttl_ms", 999, "between 1000 and 604800000"},
+    BadValueCase{"/sticky_table/shards", 0, "between 1 and 1024"},
+    BadValueCase{"/sticky_table/max_entries", 0, "between 1 and 100000000"},
+    BadValueCase{"/sticky_table/max_entries", 15, "at least the number of shards"},
     BadValueCase{"/routing/rules", json::object(), "expected an array"},
     BadValueCase{"/routing/rules/0", "x", "expected an object"},
     BadValueCase{"/routing/rules/0/type", "regex", "must be \"path_prefix\", \"path_glob\", \"header\" or \"cookie\""},

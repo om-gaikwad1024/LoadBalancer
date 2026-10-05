@@ -154,12 +154,32 @@ struct BackendConfig {
     std::uint32_t weight = 0;
 };
 
+// Session affinity for one group (plan IV.9): the session key is a cookie, mapped to a
+// backend id in the sticky table for ttl_ms after its last use.
+struct StickyConfig {
+    enum class Mode : std::uint8_t {
+        Off,
+        ApplicationCookie,  // the application's own session cookie (learned from its Set-Cookie)
+        InsertedCookie,     // a cookie the proxy sets itself
+    };
+    Mode mode = Mode::Off;
+    std::string cookie;        // cookie name; empty when off
+    std::uint32_t ttl_ms = 0;  // a mapping unused this long expires
+};
+
 struct GroupConfig {
     std::string name;
     std::vector<BackendConfig> backends;
     Strategy strategy = Strategy::RoundRobin;
     HostHeaderMode host_header = HostHeaderMode::Preserve;
     HealthConfig health;
+    StickyConfig sticky;
+};
+
+// The sticky-session table (plan IV.9, V): sharded locks, bounded size.
+struct StickyTableConfig {
+    std::uint32_t shards = 0;       // independent locks
+    std::uint32_t max_entries = 0;  // across all shards; when full, new sessions are not stored
 };
 
 // One content-routing rule (plan IV.8). Rules are tried in order; the first match picks
@@ -195,6 +215,7 @@ struct ConfigSnapshot {
     DashboardConfig dashboard;
     ConfigReloadConfig config_reload;
     BalancingConfig balancing;
+    StickyTableConfig sticky_table;
     TimeoutsConfig timeouts;
     std::vector<GroupConfig> groups;
     RoutingConfig routing;

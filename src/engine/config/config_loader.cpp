@@ -469,6 +469,49 @@ void build_limits(const json& root, Validator& v, ConfigSnapshot& out) {
     set("max_client_connections", 1, kMaxClientConnections, l.max_client_connections);
 }
 
+bool is_token(std::string_view s) noexcept;
+
+void build_sticky(const json& gj, const std::string& gpath, Validator& v, StickyConfig& out) {
+    const std::string path = child(gpath, "sticky");
+    const json* j = Validator::field(gj, "sticky");
+    if (j == nullptr || !v.check_object(*j, path, {"mode", "cookie", "ttl_ms"})) return;
+    bool mode_ok = false;
+    if (auto mode = v.get_string(*j, path, "mode")) {
+        mode_ok = true;
+        if (*mode == "off") out.mode = StickyConfig::Mode::Off;
+        else if (*mode == "application_cookie") out.mode = StickyConfig::Mode::ApplicationCookie;
+        else if (*mode == "inserted_cookie") out.mode = StickyConfig::Mode::InsertedCookie;
+        else {
+            mode_ok = false;
+            v.error(child(path, "mode"), "must be \"off\", \"application_cookie\" or \"inserted_cookie\"");
+        }
+    }
+    if (const json* c = Validator::field(*j, "cookie"); c != nullptr && mode_ok) {
+        if (out.mode == StickyConfig::Mode::Off) {
+            if (!c->is_null()) v.error(child(path, "cookie"), "must be null when mode is \"off\"");
+        } else if (!c->is_string() || !is_token(c->get<std::string>()) || c->get<std::string>().size() > 256) {
+            v.error(child(path, "cookie"), "cookie name: 1-256 token characters (RFC 6265)");
+        } else {
+            out.cookie = c->get<std::string>();
+        }
+    }
+    if (auto n = v.get_uint(*j, path, "ttl_ms", 1000, 604'800'000)) out.ttl_ms = static_cast<std::uint32_t>(*n);
+}
+
+void build_sticky_table(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/sticky_table";
+    const json* j = Validator::field(root, "sticky_table");
+    if (j == nullptr || !v.check_object(*j, path, {"shards", "max_entries"})) return;
+    if (auto n = v.get_uint(*j, path, "shards", 1, 1024)) out.sticky_table.shards = static_cast<std::uint32_t>(*n);
+    if (auto n = v.get_uint(*j, path, "max_entries", 1, 100'000'000)) {
+        out.sticky_table.max_entries = static_cast<std::uint32_t>(*n);
+    }
+    if (out.sticky_table.shards != 0 && out.sticky_table.max_entries != 0 &&
+        out.sticky_table.max_entries < out.sticky_table.shards) {
+        v.error(child(path, "max_entries"), "must be at least the number of shards");
+    }
+}
+
 void build_health(const json& gj, const std::string& gpath, Validator& v, HealthConfig& out) {
     const std::string path = child(gpath, "health");
     const json* j = Validator::field(gj, "health");
@@ -525,7 +568,7 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
     for (std::size_t gi = 0; gi < j->size(); ++gi) {
         const json& gj = (*j)[gi];
         const std::string gpath = child(path, gi);
-        if (!v.check_object(gj, gpath, {"name", "strategy", "host_header", "health", "backends"})) continue;
+        if (!v.check_object(gj, gpath, {"name", "strategy", "host_header", "health", "sticky", "backends"})) continue;
 
         GroupConfig group;
         if (auto name = v.get_name(gj, gpath, "name")) {
@@ -551,6 +594,7 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
             else v.error(child(gpath, "host_header"), "must be \"preserve\" or \"backend\"");
         }
         build_health(gj, gpath, v, group.health);
+        build_sticky(gj, gpath, v, group.sticky);
 
         const json* bj = Validator::field(gj, "backends");
         const std::string bpath = child(gpath, "backends");
@@ -708,11 +752,12 @@ ConfigLoadResult parse_config(std::string_view json_text) {
 
     auto snapshot = std::make_shared<ConfigSnapshot>();
     if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "pool", "maintenance", "metrics",
-                                  "event_log", "dashboard", "config_reload", "balancing", "timeouts", "trusted_proxies",
+                                  "event_log", "dashboard", "config_reload", "balancing", "sticky_table", "timeouts", "trusted_proxies",
                                   "groups", "routing"})) {
         build_metrics(root, v, *snapshot);
         build_config_reload(root, v, *snapshot);
         build_balancing(root, v, *snapshot);
+        build_sticky_table(root, v, *snapshot);
         build_dashboard(root, v, *snapshot);
         build_event_log(root, v, *snapshot);
         build_trusted_proxies(root, v, *snapshot);

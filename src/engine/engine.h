@@ -36,6 +36,12 @@ struct EngineStats {
     std::uint64_t events_dropped = 0;    // event-log entries lost because the writer fell behind
     std::uint64_t reloads_accepted = 0;  // plan IV.14: configs swapped in while running
     std::uint64_t reloads_rejected = 0;  // invalid or restart-only changes; the old config stays
+    // Session affinity (plan IV.9).
+    std::uint64_t sticky_entries = 0;        // mappings in the sticky table now
+    std::uint64_t sticky_hits = 0;           // requests sent to their session's backend
+    std::uint64_t sticky_assignments = 0;    // sessions mapped to a backend
+    std::uint64_t sticky_reassignments = 0;  // sessions moved because their backend became ineligible
+    std::uint64_t sticky_not_stored = 0;     // new sessions not mapped because the table was full
 };
 
 // Outcome of a hot reload (plan IV.14). A rejected reload changes nothing.

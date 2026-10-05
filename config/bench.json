@@ -67,6 +67,11 @@
                        "name":  "web",
                        "strategy":  "round_robin",
                        "host_header":  "preserve",
+                       "sticky":  {
+                                      "mode":  "off",
+                                      "cookie":  null,
+                                      "ttl_ms":  1800000
+                                  },
                        "health":  {
                                       "type":  "http",
                                       "path":  "/health",
@@ -107,6 +112,10 @@
                           "watch_file":  false,
                           "debounce_ms":  300
                       },
+    "sticky_table":  {
+                         "shards":  64,
+                         "max_entries":  1000000
+                     },
     "balancing":  {
                       "response_time_decay_ms":  10000,
                       "response_time_expiry_ms":  30000

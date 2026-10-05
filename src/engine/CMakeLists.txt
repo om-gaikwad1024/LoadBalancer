@@ -11,6 +11,8 @@ add_library(lb_engine STATIC
   backend/backend_runtime.cpp
   backend/registry.h
   backend/registry.cpp
+  affinity/sticky_table.h
+  affinity/sticky_table.cpp
   balance/group_balancer.h
   balance/group_balancer.cpp
   metrics/metrics_types.h

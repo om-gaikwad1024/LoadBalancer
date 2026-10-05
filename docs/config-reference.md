@@ -27,11 +27,11 @@ every new request sees the complete new config. Nothing is ever half-applied.
 
 | Applies | Fields |
 |---|---|
-| Next request | `groups` (backends added or removed, weights, strategy, `host_header`), `routing`, `trusted_proxies`, `balancing`, `timeouts` (per request; `client_header_ms` for a connection's first request counts from the accept), `pool.wait_timeout_ms`, `pool.fail_fast_connect`, `limits.max_client_connections` |
+| Next request | `groups` (backends added or removed, weights, strategy, `host_header`, `sticky`), `routing`, `trusted_proxies`, `balancing`, `timeouts` (per request; `client_header_ms` for a connection's first request counts from the accept), `pool.wait_timeout_ms`, `pool.fail_fast_connect`, `limits.max_client_connections` |
 | At once, on each pool | `pool.max_connections_per_backend`, `pool.max_idle_per_backend`, `pool.max_waiters_per_backend`, `pool.idle_timeout_ms`. Idle connections over a lower `max_idle` are closed; a lower cap is reached as busy connections are released (they are never cut) |
 | At once | `groups[].health`: health checks restart with the new settings (only when a backend or a health setting changed). A backend's current health state is kept |
 | New client connections | `limits` (parser limits) and `buffers` |
-| **Restart only** | `listen.*`, `workers.threads`, `maintenance.interval_ms`, `metrics.*`, `event_log.*`, `dashboard.*`, `config_reload.*`. A reload that changes any of these is **rejected**, naming each field |
+| **Restart only** | `listen.*`, `workers.threads`, `maintenance.interval_ms`, `metrics.*`, `event_log.*`, `dashboard.*`, `config_reload.*`, `sticky_table.*`. A reload that changes any of these is **rejected**, naming each field |
 
 Backends are matched by `id`. A backend whose id, address, port and group are unchanged keeps all of
 its live state: health, draining, counters, pooled connections and latency history. A reload
@@ -133,9 +133,12 @@ Events written: `engine_started`, `engine_stopped`, `backend_marked_unhealthy` (
 (`status`, `reason`), `response_aborted`, `timeout` (client-side timeouts except keep-alive idle),
 `retry` and `retry_result` (stale pooled connection), `config_watch_started`,
 `config_reload_accepted` (`source`, `added`, `removed`, `reweighted`), `config_reload_rejected`
-(`source`, `errors`), `health_checks_not_restarted`, and `request_step` in debug mode. In debug mode
-the steps are `request_received`, `group_routed` (with the group and the rule, or `default`),
-`backend_selected`, `backend_connected`, `request_forwarded`, `response_received` and
+(`source`, `errors`), `health_checks_not_restarted`, `sticky_reassigned` (`group`, `from`, `to`,
+`reason`), `sticky_table_full` (at most once per maintenance interval, with how many sessions
+were not stored), and `request_step` in debug mode. In debug mode the steps are
+`request_received`, `group_routed` (with the group and the rule, or `default`),
+`affinity_checked` (sticky groups only: `sticky to <id>`, `new session on <id>`,
+`no session cookie; <id>` or `reassigned from <id> (<reason>) to <id>`), `backend_selected`, `backend_connected`, `request_forwarded`, `response_received` and
 `response_completed`, plus `error_response`, `aborted` and `timed_out` on error paths. Malformed
 requests and keep-alive idle closes are counted but not logged, since they're common and
 client-controlled.
@@ -165,6 +168,15 @@ has been quiet for `debounce_ms`. A change whose content is byte-for-byte the ac
 |---|---|---|---|
 | `config_reload.watch_file` | boolean | `true` / `false` | Reload the config file automatically when it changes. With `false`, reloads happen only on request (`reload` command) |
 | `config_reload.debounce_ms` | integer | 10–60000 | Quiet time after the last change before the file is read. Every further write restarts it |
+
+## `sticky_table`: session affinity map (plan IV.9, V)
+One table for all groups, keyed by (group, session key). It is split into shards with a lock each,
+so requests contend only within one shard; the maintenance thread removes expired sessions.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `sticky_table.shards` | integer | 1–1024 | Number of independently locked shards |
+| `sticky_table.max_entries` | integer | 1–100000000, ≥ `shards` | Sessions the table can hold. Each shard holds `max_entries / shards`. When a shard is full, a new session is served but not made sticky (no cookie is issued), counted as `sticky_not_stored`, and reported by `sticky_table_full`. Sessions already stored keep working |
 
 ## `balancing`: least response time (plan IV.7)
 Used by every group with `"strategy": "least_response_time"`. Each backend's average is
@@ -245,6 +257,34 @@ A killed backend is excluded within `interval_ms × N + timeout_ms` (plan IV.10)
 checks only move a backend between healthy and unhealthy; they never change a draining
 backend. Every backend starts healthy. Probe sockets skip Windows' connect retries after a
 refusal, so a dead backend fails a probe at once instead of after about a second.
+
+`groups[].sticky`: session affinity (plan IV.9). The lookup runs **after routing, inside the
+group routing chose**, and before the balancer. A session is a cookie value, mapped in the
+sticky table to a backend id; each use restarts its TTL.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `sticky.mode` | string | `"off"`, `"application_cookie"` or `"inserted_cookie"` | `off`: no affinity. `application_cookie`: the session key is the application's own cookie, learned when the backend sets it. `inserted_cookie`: the proxy issues its own cookie |
+| `sticky.cookie` | string or `null` | `null` when `mode` is `off`; otherwise a cookie name of 1–256 token characters | Cookie that carries the session key |
+| `sticky.ttl_ms` | integer | 1000–604800000 (7 days) | A session not used for this long is forgotten; the next request is balanced afresh |
+
+How a request is placed:
+- **The session's backend is eligible** (healthy, not draining): the request goes there.
+- **It is unhealthy, draining or no longer in the group**: the balancer picks a backend in the
+  same group, the session moves there for good, and `sticky_reassigned` is logged with the old
+  backend, the new one and the reason. If the old backend recovers, the session stays where it moved.
+- **The cookie value is unknown** (new, expired, or issued before a restart): the balancer picks,
+  and the session is mapped to that backend from then on.
+- **No cookie**: the balancer picks. With `inserted_cookie`, the proxy maps a new random key
+  (128 bits, 32 hex characters) to that backend and adds
+  `Set-Cookie: <cookie>=<key>; Path=/; HttpOnly; SameSite=Lax` to the response. With
+  `application_cookie`, a `Set-Cookie` for that cookie in the backend's response maps its value
+  to the backend that sent it; the header passes through unchanged.
+- A proxy cookie whose value is not a 32-character hex key is ignored and replaced.
+
+The cookie is not marked `Secure` while the proxy only speaks HTTP (TLS is phase 4). Sessions
+live in memory only: a restart forgets them, and each client is placed afresh on its next request
+(plan XII). A reload keeps every session.
 
 Each backend:
 

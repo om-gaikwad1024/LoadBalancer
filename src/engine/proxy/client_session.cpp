@@ -472,7 +472,7 @@ void ClientSession::on_request_head() {
         if (group->strategy == Strategy::IpHash) {
             pick.client_hash = balance::hash_key(client_identity(peer_address_, req.fields, *config_));
         }
-        backend_rt_ = group->pick(pick);
+        backend_rt_ = pick_backend(*group, config_->find_group(group_name), req, pick);
     }
     if (!backend_rt_) {
         // Plan IV.7/VI: no eligible backend is answered at once with 503, never a hang, and
@@ -556,8 +556,125 @@ void ClientSession::on_response_head() {
     client_mode_ = choose_client_body_mode(resp, client_version_);
     keep_alive_ = request_keep_alive_ && client_mode_ != ClientBodyMode::UntilClose && !shutdown_requested_ &&
                   !ctx_.stopping->load(std::memory_order_relaxed);
-    append_client_response_head(client_out_, resp, client_mode_, keep_alive_, client_version_, request_tag_);
+    append_client_response_head(client_out_, resp, client_mode_, keep_alive_, client_version_, request_tag_,
+                                sticky_set_cookie_);
+    if (sticky_ != nullptr && sticky_->mode == StickyConfig::Mode::ApplicationCookie) learn_sticky_cookie(resp);
     response_started_ = true;
+}
+
+namespace {
+
+std::string_view trim_spaces(std::string_view s) noexcept {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
+    return s;
+}
+
+std::string_view unquote(std::string_view v) noexcept {
+    return v.size() >= 2 && v.front() == '"' && v.back() == '"' ? v.substr(1, v.size() - 2) : v;
+}
+
+// The value of the first cookie named `name` in the request's Cookie headers, or empty.
+std::string_view request_cookie(const http::Fields& fields, std::string_view name) noexcept {
+    for (const auto& f : fields.all()) {
+        if (!http::iequals(f.name, "Cookie")) continue;
+        std::string_view rest = f.value;
+        while (!rest.empty()) {
+            const auto semi = rest.find(';');
+            const std::string_view pair = trim_spaces(rest.substr(0, semi));
+            rest = semi == std::string_view::npos ? std::string_view{} : rest.substr(semi + 1);
+            const auto eq = pair.find('=');
+            if (eq != std::string_view::npos && trim_spaces(pair.substr(0, eq)) == name) {
+                return unquote(trim_spaces(pair.substr(eq + 1)));
+            }
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+std::shared_ptr<backend::BackendRuntime> ClientSession::pick_backend(balance::GroupBalancer& group,
+                                                                     const GroupConfig* config,
+                                                                     const http::RequestHead& request,
+                                                                     const balance::PickContext& pick) {
+    if (config == nullptr || config->sticky.mode == StickyConfig::Mode::Off || ctx_.sticky == nullptr) {
+        return group.pick(pick);
+    }
+    sticky_ = &config->sticky;
+    sticky_group_ = group.name;
+    const auto ttl = std::chrono::milliseconds(sticky_->ttl_ms);
+    const bool inserted = sticky_->mode == StickyConfig::Mode::InsertedCookie;
+    std::string key(request_cookie(request.fields, sticky_->cookie));
+    // A proxy cookie that is not one of ours is ignored; the client then gets a new one.
+    if (inserted && !affinity::StickyTable::is_session_key(key)) key.clear();
+
+    std::shared_ptr<backend::BackendRuntime> chosen;
+    const bool details = ctx_.events != nullptr && ctx_.events->trace_requests();  // debug trace text
+    if (!key.empty()) {
+        if (const auto mapped = ctx_.sticky->find(sticky_group_, key, pick.now, ttl)) {
+            std::shared_ptr<backend::BackendRuntime> current;
+            for (const auto& m : group.members) {
+                if (m->id == *mapped) current = m;
+            }
+            if (current && current->eligible()) {
+                ctx_.counters->sticky_hits.fetch_add(1, std::memory_order_relaxed);
+                trace(TraceStep::AffinityChecked, 0, details ? "sticky to " + current->id : std::string());
+                return current;
+            }
+            // Plan IV.9: unhealthy, draining (or removed): a new backend in the same group,
+            // the session moves there, and the reassignment is logged.
+            chosen = group.pick(pick);
+            if (!chosen) return nullptr;
+            ctx_.sticky->assign(sticky_group_, key, chosen->id, pick.now, ttl);
+            ctx_.counters->sticky_reassignments.fetch_add(1, std::memory_order_relaxed);
+            const std::string reason =
+                current ? std::string(to_string(current->state.load(std::memory_order_acquire))) : "removed from the group";
+            log_event("sticky_reassigned",
+                      "session in group " + sticky_group_ + " moved from " + *mapped + " (" + reason + ") to " +
+                          chosen->id,
+                      {{"group", sticky_group_}, {"from", *mapped}, {"to", chosen->id}, {"reason", reason}});
+            trace(TraceStep::AffinityChecked, 0,
+                  details ? "reassigned from " + *mapped + " (" + reason + ") to " + chosen->id : std::string());
+            return chosen;
+        }
+        // A cookie the table does not know (new, expired, or from before a restart).
+        chosen = group.pick(pick);
+        if (chosen && ctx_.sticky->assign(sticky_group_, key, chosen->id, pick.now, ttl)) {
+            ctx_.counters->sticky_assignments.fetch_add(1, std::memory_order_relaxed);
+        }
+        trace(TraceStep::AffinityChecked, 0,
+              details ? (chosen ? "new session on " + chosen->id : std::string("no backend")) : std::string());
+        return chosen;
+    }
+
+    // No session cookie yet.
+    chosen = group.pick(pick);
+    if (chosen && inserted) {
+        key = affinity::StickyTable::new_session_key();
+        if (ctx_.sticky->assign(sticky_group_, key, chosen->id, pick.now, ttl)) {
+            ctx_.counters->sticky_assignments.fetch_add(1, std::memory_order_relaxed);
+            sticky_set_cookie_ = sticky_->cookie + "=" + key + "; Path=/; HttpOnly; SameSite=Lax";
+        }
+    }
+    trace(TraceStep::AffinityChecked, 0,
+          details ? (chosen ? "no session cookie; " + chosen->id : std::string("no backend")) : std::string());
+    return chosen;
+}
+
+void ClientSession::learn_sticky_cookie(const http::ResponseHead& response) {
+    for (const auto& f : response.fields.all()) {
+        if (!http::iequals(f.name, "Set-Cookie")) continue;
+        const std::string_view pair = trim_spaces(std::string_view(f.value).substr(0, f.value.find(';')));
+        const auto eq = pair.find('=');
+        if (eq == std::string_view::npos || trim_spaces(pair.substr(0, eq)) != sticky_->cookie) continue;
+        const std::string_view value = unquote(trim_spaces(pair.substr(eq + 1)));
+        if (value.empty()) continue;  // a cookie being deleted; its mapping expires on its own
+        if (ctx_.sticky->assign(sticky_group_, value, backend_rt_->id, Clock::now(),
+                                std::chrono::milliseconds(sticky_->ttl_ms))) {
+            ctx_.counters->sticky_assignments.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 }
 
 void ClientSession::handle_backend_eof() {
@@ -707,6 +824,9 @@ void ClientSession::reset_for_next_request() {
     request_head_seen_ = false;
     outcome_recorded_ = false;
     metrics_series_ = 0;
+    sticky_ = nullptr;
+    sticky_group_.clear();
+    sticky_set_cookie_.clear();
     backend_ready_at_ = {};
     backend_done_at_ = {};
     request_started_ = client_in_.has_data();  // pipelined bytes: the next request has begun
