@@ -13,6 +13,7 @@ std::string_view to_string(BackendState state) noexcept {
         case BackendState::Healthy: return "healthy";
         case BackendState::Unhealthy: return "unhealthy";
         case BackendState::Draining: return "draining";
+        case BackendState::Drained: return "drained";
     }
     return "unknown";
 }

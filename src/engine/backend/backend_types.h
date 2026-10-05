@@ -9,7 +9,10 @@ namespace lb {
 // Per-backend state (plan IV.4). Unhealthy and draining are separate states (plan VIII):
 // an unhealthy backend keeps receiving health probes; a draining one is being removed.
 // Circuit-open arrives with phase 3.
-enum class BackendState : std::uint8_t { Healthy, Unhealthy, Draining };
+// Only Healthy backends get new requests. Draining: taken out on purpose, in-flight requests
+// finish (plan IV.12). Drained: the drain finished (or timed out): out of service, no probes,
+// until a config or operator returns it.
+enum class BackendState : std::uint8_t { Healthy, Unhealthy, Draining, Drained };
 
 std::string_view to_string(BackendState state) noexcept;
 

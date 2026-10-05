@@ -135,7 +135,9 @@ tipped it over), `backend_marked_healthy` (`successes`, `check`), `no_backend_av
 `retry` and `retry_result` (stale pooled connection), `config_watch_started`,
 `config_reload_accepted` (`source`, `added`, `removed`, `reweighted`), `config_reload_rejected`
 (`source`, `errors`), `health_checks_not_restarted`, `sticky_reassigned` (`group`, `from`, `to`,
-`reason`), `sticky_table_full` (at most once per maintenance interval, with how many sessions
+`reason`), `drain_started` (`source`: `api` or `config`, `in_flight`, `timeout_ms`), `drain_completed`
+(`duration_ms`), `drain_timed_out` (`aborted`), `drain_aborted` (per request), `drain_cancelled`
+(`source`, `was`), `drain_ended` (removed from the config while draining), `sticky_table_full` (at most once per maintenance interval, with how many sessions
 were not stored), and `request_step` in debug mode. In debug mode the steps are
 `request_received`, `group_routed` (with the group and the rule, or `default`),
 `affinity_checked` (sticky groups only: `sticky to <id>`, `new session on <id>`,
@@ -205,7 +207,8 @@ deadline moves forward each time bytes move. The plan VI pooled-idle timeout is
 | `timeouts.backend_connect_ms` | integer | 1–600000 | absolute | Opening a new backend connection | Backend failure; **502** (phase 3: retry if eligible) |
 | `timeouts.backend_response_ms` | integer | 1–600000 | absolute | From the request being fully sent until the response headers arrive | Backend failure; **504** |
 | `timeouts.backend_idle_ms` | integer | 1–600000 | idle | A backend that stalls while taking the request body or sending the response body | Backend failure: **504** while sending the request, **502** before any response byte reached the client; otherwise the client connection is cut so it sees an incomplete response |
-| `timeouts.shutdown_grace_ms` | integer | 0–600000 | absolute | On shutdown the proxy stops accepting and closes idle keep-alive connections at once. In-flight requests get this long to finish (their responses carry `Connection: close`) | Remaining connections are closed |
+| `timeouts.shutdown_grace_ms` | integer | 0–600000 | absolute | On shutdown the proxy stops accepting and closes idle keep-alive connections at once. In-flight requests get this long to finish (their responses carry `Connection: close`). This is the shutdown form of a drain, for every backend at once | Remaining connections are closed |
+| `timeouts.drain_ms` | integer | 1–600000 | absolute, from the start of a drain | How long a draining backend's in-flight requests get to finish (plan IV.12) | The remaining requests are aborted: **502** if no response byte reached the client yet, otherwise the client connection is cut. The backend becomes `drained`, logged as `drain_timed_out` |
 
 `client_write_idle_ms` and `backend_idle_ms` aren't rows in the plan VI table, but follow from
 its rule that every wait has a limit.
@@ -321,6 +324,34 @@ Each backend:
 | `groups[].backends[].address` | string | IPv4 literal, not `0.0.0.0` | Backend address |
 | `groups[].backends[].port` | integer | 1–65535 | Backend port. The same `address:port` may not appear twice in one group (it may appear in different groups) |
 | `groups[].backends[].weight` | integer | 1–1000 | Relative capacity, used by `weighted_round_robin` and `ip_hash` and shown on the dashboard |
+| `groups[].backends[].drain` | string | `"keep"`, `"start"` or `"cancel"` | What this config says about draining (plan IV.12). `keep`: leave the running state alone; a new backend starts in service. `start`: drain it (nothing changes if it is already draining or drained; a new backend starts draining and never takes a request). `cancel`: put a draining or drained backend back in service |
+
+### Graceful drain (plan IV.12)
+Backend states: **healthy** (gets requests), **unhealthy** (health checks took it out; probes keep
+running so they can bring it back), **draining** (taken out on purpose, in-flight requests
+finishing) and **drained** (out of service: no requests, no probes, no pooled connections).
+
+A drain starts from the config (`"drain": "start"`), from `Engine::drain_backend()` (also
+`set_backend_state(..., Draining)`), and in phase 2.7 from the dashboard. When it starts, the
+backend gets no new requests and no new sticky sessions (sticky clients move to another backend in
+the group), and its idle pooled connections are closed at once. Connections in use close when their
+request finishes instead of returning to the pool. The maintenance thread then checks it every
+`maintenance.interval_ms`:
+- **In-flight count reaches zero:** the backend becomes `drained`; `drain_completed` is logged
+  with how long it took.
+- **`timeouts.drain_ms` expires first:** the remaining requests are aborted (see the timeouts
+  table), each logged as `drain_aborted` with its request id, and the backend becomes `drained`;
+  `drain_timed_out` is logged with the count. An aborted request counts against neither the
+  backend's health nor its metrics.
+
+A drained backend stays drained until it is returned explicitly: `"drain": "cancel"` in a
+reloaded config, or `Engine::undrain_backend()`. It then goes straight back to healthy; health
+checks take it out again if it is not. **A reload never un-drains a backend unless its config says
+`cancel`.** With `keep`, a backend drained by an operator stays drained across any number of
+reloads. With `cancel` left in the file, every later reload returns it to service, so set it back
+to `keep` once it is back. A backend whose address or group changes stays draining or drained,
+and one removed from the config while draining ends its drain (`drain_ended`); its in-flight
+requests still finish.
 
 ## `routing`: content-aware routing (plan IV.8)
 Routing picks the **group** for every request. It runs before session affinity and load

@@ -92,6 +92,9 @@ struct TimeoutsConfig {
     std::uint32_t backend_idle_ms = 0;           // backend stalls while sending or receiving a body
     // On shutdown, in-flight requests get this long to finish before connections are forced closed.
     std::uint32_t shutdown_grace_ms = 0;
+    // A draining backend's in-flight requests get this long; then they are aborted (502) and
+    // the backend is taken out (plan IV.12, VI).
+    std::uint32_t drain_ms = 0;
 };
 
 // IPv4 network in host byte order, e.g. 10.0.0.0/8.
@@ -147,11 +150,20 @@ struct LimitsConfig {
     std::uint32_t max_client_connections = 0;  // global cap; connections over it get 503 (plan IV.1)
 };
 
+// What a config (load or reload) says about a backend's drain state (plan IV.12). A reload
+// never un-drains a backend unless its config explicitly says "cancel".
+enum class DrainDirective : std::uint8_t {
+    Keep,    // leave the running drain state alone (a new backend starts in service)
+    Start,   // drain it (nothing changes if it is already draining or drained)
+    Cancel,  // return a draining or drained backend to service
+};
+
 struct BackendConfig {
     std::string id;       // unique across all groups
     std::string address;  // IPv4 literal
     std::uint16_t port = 0;
     std::uint32_t weight = 0;
+    DrainDirective drain = DrainDirective::Keep;
 };
 
 // Passive health checks for one group (plan IV.10, phase 2): real request outcomes count

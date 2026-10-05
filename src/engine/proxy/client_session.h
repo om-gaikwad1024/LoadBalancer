@@ -36,6 +36,10 @@ public:
     void request_shutdown();
     // Shutdown grace expired: close both sockets immediately.
     void force_close();
+    // Drain timeout (plan IV.12): if this session's current request is using `backend`, abort
+    // it: 502 if nothing was sent to the client yet, otherwise the client connection is cut.
+    // Thread-safe; the outcome is applied on a worker. True if a request was aborted.
+    bool abort_for_drain(const backend::BackendRuntime* backend);
 
     void on_io_complete(net::IoOp* op, DWORD bytes, DWORD error) noexcept override;
 
@@ -106,6 +110,7 @@ private:
     // Ends the current request's use of its backend: in-flight count, success/failure, the
     // response-time sample and passive health. `reason` describes a failure.
     void end_backend_use(BackendOutcome outcome, std::string_view reason = {}) noexcept;
+    void handle_drain_abort();
     // Plan IV.10 passive checks: count this request's outcome toward its backend's health.
     void record_passive_health(bool failed, std::string_view reason) noexcept;
     void reset_for_next_request();
@@ -143,6 +148,7 @@ private:
     TimerService::Id deadline_timer_ = 0;
     std::uint64_t deadline_generation_ = 0;
     Deadline expired_ = Deadline::None;
+    bool drain_abort_ = false;  // abort_for_drain() cancelled the pending I/O
     bool first_request_ = true;
     TimePoint head_deadline_{};
     bool head_deadline_set_ = false;

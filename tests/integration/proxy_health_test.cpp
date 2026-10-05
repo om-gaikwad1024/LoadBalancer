@@ -163,17 +163,26 @@ TEST_F(ProxyTest, SlowProbeTimesOutWithoutDelayingOtherProbesOrTraffic) {
 }
 
 TEST_F(ProxyTest, HealthChecksNeverOverrideDraining) {
-    start_proxy({start_backend()}, fast_health());
+    // A slow request keeps the backend draining (a drain ends when nothing is in flight).
+    mock::MockFaults slow;
+    slow.latency_ms = 3000;
+    start_proxy({start_backend(slow)}, fast_health());
+    ClientResponse in_flight;
+    std::thread t([&] { in_flight = fetch(proxy_port(), "/slow"); });
+    ASSERT_TRUE(eventually([&] { return stats_of(engine(), "b1").in_flight == 1; }));
     ASSERT_TRUE(engine().set_backend_state("b1", BackendState::Draining));
-    mock::MockFaults f;
+    mock::MockFaults f = slow;
     f.health_status = 503;
     backend().set_faults(f);
     ASSERT_TRUE(eventually([&] { return stats_of(engine(), "b1").probe_failures_in_a_row >= kDownAfter; }));
     EXPECT_EQ(stats_of(engine(), "b1").state, BackendState::Draining);
-    backend().set_faults({});
+    backend().set_faults(slow);
     ASSERT_TRUE(eventually([&] { return stats_of(engine(), "b1").probe_successes_in_a_row >= kUpAfter; }));
     EXPECT_EQ(stats_of(engine(), "b1").state, BackendState::Draining);
     EXPECT_EQ(engine().stats().backends_marked_down + engine().stats().backends_marked_up, 0u);
+    t.join();
+    EXPECT_EQ(in_flight.status, 200);  // the in-flight request finished normally (plan IV.12)
+    EXPECT_TRUE(eventually([&] { return stats_of(engine(), "b1").state == BackendState::Drained; }));
 }
 
 // Plan IV.10 Done: requests already in flight when the backend dies fail (phase 3 retries

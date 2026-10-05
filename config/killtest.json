@@ -57,7 +57,8 @@
                      "backend_connect_ms":  3000,
                      "backend_response_ms":  30000,
                      "backend_idle_ms":  30000,
-                     "shutdown_grace_ms":  10000
+                     "shutdown_grace_ms":  10000,
+                     "drain_ms":  30000
                  },
     "trusted_proxies":  [
 
@@ -90,19 +91,22 @@
                                             "id":  "web-1",
                                             "address":  "127.0.0.1",
                                             "port":  9201,
-                                            "weight":  1
+                                            "weight":  1,
+                                            "drain":  "keep"
                                         },
                                         {
                                             "id":  "web-2",
                                             "address":  "127.0.0.1",
                                             "port":  9202,
-                                            "weight":  1
+                                            "weight":  1,
+                                            "drain":  "keep"
                                         },
                                         {
                                             "id":  "web-3",
                                             "address":  "127.0.0.1",
                                             "port":  9203,
-                                            "weight":  1
+                                            "weight":  1,
+                                            "drain":  "keep"
                                         }
                                     ]
                    }

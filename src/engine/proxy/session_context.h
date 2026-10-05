@@ -44,6 +44,7 @@ struct EngineCounters {
     std::atomic<std::uint64_t> sticky_hits{0};          // request went to its session's backend
     std::atomic<std::uint64_t> sticky_assignments{0};   // a new session was mapped to a backend
     std::atomic<std::uint64_t> sticky_reassignments{0};  // its backend was ineligible or gone: moved
+    std::atomic<std::uint64_t> drain_aborts{0};          // in-flight requests aborted by a drain timeout
 };
 
 // Live sessions, so shutdown can reach them. Touched only when a connection opens or

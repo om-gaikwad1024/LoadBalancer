@@ -42,6 +42,11 @@ struct EngineStats {
     std::uint64_t sticky_assignments = 0;    // sessions mapped to a backend
     std::uint64_t sticky_reassignments = 0;  // sessions moved because their backend became ineligible
     std::uint64_t sticky_not_stored = 0;     // new sessions not mapped because the table was full
+    // Graceful drain (plan IV.12).
+    std::uint64_t drains_started = 0;
+    std::uint64_t drains_completed = 0;   // in-flight count reached zero
+    std::uint64_t drains_timed_out = 0;   // timeouts.drain_ms expired first
+    std::uint64_t drain_aborted_requests = 0;
 };
 
 // Outcome of a hot reload (plan IV.14). A rejected reload changes nothing.
@@ -110,8 +115,19 @@ public:
     std::vector<LoggedEvent> recent_events() const;
 
     // Operator/health-check entry point: unhealthy or draining backends stop receiving new
-    // requests and their idle pooled connections are closed at once. False if the id is unknown.
+    // requests and their idle pooled connections are closed at once. Draining goes through
+    // drain_backend(); Healthy on a draining or drained backend through undrain_backend().
+    // False if the id is unknown.
     bool set_backend_state(std::string_view backend_id, BackendState state);
+
+    // Graceful drain (plan IV.12): the backend gets no new requests or sticky sessions, its
+    // idle pooled connections close at once, and its in-flight requests finish. It becomes
+    // "drained" (out of service) when its in-flight count reaches zero, or when
+    // timeouts.drain_ms expires: the rest are then aborted (502). Every step is logged.
+    // False if the id is unknown or the backend is already draining or drained.
+    bool drain_backend(std::string_view backend_id);
+    // Returns a draining or drained backend to service. False if it is neither.
+    bool undrain_backend(std::string_view backend_id);
 
     // Hot reload (plan IV.14): validates everything first, then swaps the config and the
     // backend set atomically. In-flight requests finish on the snapshot they started with;

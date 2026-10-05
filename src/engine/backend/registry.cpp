@@ -55,6 +55,8 @@ void BackendRegistry::load(std::shared_ptr<const ConfigSnapshot> config, const S
         std::vector<std::shared_ptr<BackendRuntime>> members;
         for (const auto& b : g.backends) {
             members.push_back(std::make_shared<BackendRuntime>(b, g.name, limits, ops_));
+            // "drain": "start" on a new backend: it never takes a request (the engine tracks the drain).
+            if (b.drain == DrainDirective::Start) members.back()->state.store(BackendState::Draining);
             members.back()->metrics_series = series_for ? series_for(b.id) : next->backends.size() + 1;
             next->backends.push_back(members.back());
         }
@@ -83,9 +85,13 @@ ReconcileResult BackendRegistry::reconcile(std::shared_ptr<const ConfigSnapshot>
                 kept.push_back(rt);
             } else {
                 rt = std::make_shared<BackendRuntime>(b, g.name, limits, ops_);
+                if (b.drain == DrainDirective::Start) rt->state.store(BackendState::Draining);
                 rt->metrics_series = series_for ? series_for(b.id) : 0;
-                // A drained backend stays drained when it moves (plan IV.12).
-                if (old && old->state.load() == BackendState::Draining) rt->state.store(BackendState::Draining);
+                // A draining or drained backend stays so when it moves (plan IV.12).
+                if (old) {
+                    const BackendState s = old->state.load();
+                    if (s == BackendState::Draining || s == BackendState::Drained) rt->state.store(s);
+                }
                 result.added.push_back(b.id);
             }
             members.push_back(rt);

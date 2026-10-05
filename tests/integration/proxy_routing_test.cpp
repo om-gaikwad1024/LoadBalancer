@@ -20,7 +20,7 @@ using lbtest::TestClient;
 namespace {
 
 nlohmann::json backend_json(const std::string& id, std::uint16_t port) {
-    return {{"id", id}, {"address", "127.0.0.1"}, {"port", port}, {"weight", 1}};
+    return {{"id", id}, {"address", "127.0.0.1"}, {"port", port}, {"weight", 1}, {"drain", "keep"}};
 }
 
 nlohmann::json rule(const std::string& id, const std::string& type, const nlohmann::json& field,

@@ -207,7 +207,7 @@ TEST_F(ProxyTest, StickyClientStillReachesTheGroupItsPathRoutesTo) {
         sticky(web, "inserted_cookie", "lb_session");
         auto api = web;
         api["name"] = "api";
-        api["backends"] = nlohmann::json::array({{{"id", "api-1"}, {"address", "127.0.0.1"}, {"port", a1}, {"weight", 1}}});
+        api["backends"] = nlohmann::json::array({{{"id", "api-1"}, {"address", "127.0.0.1"}, {"port", a1}, {"weight", 1}, {"drain", "keep"}}});
         sticky(api, "off", nullptr);
         j["groups"].push_back(api);
         j["routing"]["rules"] = nlohmann::json::array(

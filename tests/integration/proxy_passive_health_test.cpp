@@ -210,5 +210,8 @@ TEST_F(ProxyTest, PassiveChecksLeaveADrainingBackendDraining) {
     ASSERT_TRUE(eventually([&] { return engine().backend_stats()[0].in_flight == 1; }));
     ASSERT_TRUE(engine().set_backend_state("b1", BackendState::Draining));
     EXPECT_EQ(c.read_response().status, 504);
-    EXPECT_EQ(state_of(engine(), "b1"), BackendState::Draining);
+    // Still being drained (or already drained, once nothing is in flight): never unhealthy.
+    const BackendState after = state_of(engine(), "b1");
+    EXPECT_TRUE(after == BackendState::Draining || after == BackendState::Drained) << lb::to_string(after);
+    EXPECT_EQ(engine().stats().backends_marked_down, 0u);
 }

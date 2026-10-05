@@ -69,7 +69,8 @@
     "backend_connect_ms": 3000,
     "backend_response_ms": 30000,
     "backend_idle_ms": 30000,
-    "shutdown_grace_ms": 10000
+    "shutdown_grace_ms": 10000,
+    "drain_ms": 30000
   },
   "trusted_proxies": [],
   "groups": [
@@ -100,13 +101,15 @@
           "id": "web-1",
           "address": "127.0.0.1",
           "port": 9001,
-          "weight": 1
+          "weight": 1,
+          "drain": "keep"
         },
         {
           "id": "web-2",
           "address": "127.0.0.1",
           "port": 9002,
-          "weight": 1
+          "weight": 1,
+          "drain": "keep"
         }
       ]
     },
@@ -137,7 +140,8 @@
           "id": "api-1",
           "address": "127.0.0.1",
           "port": 9003,
-          "weight": 1
+          "weight": 1,
+          "drain": "keep"
         }
       ]
     }

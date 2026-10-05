@@ -139,6 +139,7 @@ public:
                        {"workers", workers_.size()},
                        {"backends", backends_.all().size()}});
         listen_address_ = config->listen.address;
+        apply_drain_directives(*config);
         if (sink_.load() != nullptr) {
             publisher_.start(L"lb-dashboard-publisher", std::chrono::milliseconds(config->dashboard.publish_interval_ms),
                              [this] { publish(); });
@@ -248,6 +249,10 @@ public:
         s.sticky_assignments = counters_.sticky_assignments.load();
         s.sticky_reassignments = counters_.sticky_reassignments.load();
         s.sticky_not_stored = sticky_ ? sticky_->not_stored() : 0;
+        s.drains_started = drains_started_.load();
+        s.drains_completed = drains_completed_.load();
+        s.drains_timed_out = drains_timed_out_.load();
+        s.drain_aborted_requests = counters_.drain_aborts.load();
         return s;
     }
 
@@ -265,7 +270,64 @@ public:
         return out;
     }
 
-    bool set_backend_state(std::string_view id, BackendState state) { return backends_.set_state(id, state); }
+    bool set_backend_state(std::string_view id, BackendState state) {
+        if (state == BackendState::Draining) return drain_backend(id, "api");
+        if (state == BackendState::Healthy) {
+            const auto b = backends_.find(id);
+            if (!b) return false;
+            const BackendState now = b->state.load();
+            if (now == BackendState::Draining || now == BackendState::Drained) return undrain_backend(id, "api");
+        }
+        return backends_.set_state(id, state);
+    }
+
+    bool drain_backend(std::string_view id, std::string_view source) {
+        if (!started_ || stopped_) return false;
+        const auto b = backends_.find(id);
+        if (!b) return false;
+        BackendState s = b->state.load(std::memory_order_acquire);
+        for (;;) {
+            if (s == BackendState::Drained) return false;
+            if (s == BackendState::Draining) break;  // e.g. a new backend whose config said "start"
+            if (b->state.compare_exchange_weak(s, BackendState::Draining, std::memory_order_acq_rel)) break;
+        }
+        b->pool.close_idle();  // plan IV.12: at once
+        const auto timeout = config_.current()->timeouts.drain_ms;
+        {
+            std::lock_guard lock(drains_mutex_);
+            for (const auto& d : drains_) {
+                if (d.id == id) return false;  // already being drained
+            }
+            drains_.push_back({std::string(id), Clock::now()});
+        }
+        drains_started_.fetch_add(1);
+        const auto in_flight = b->in_flight.load();
+        events_->emit("drain_started",
+                      std::string(id) + " draining (" + std::string(source) + "): " + std::to_string(in_flight) +
+                          " requests in flight, timeout " + std::to_string(timeout) + " ms",
+                      {{"source", source}, {"in_flight", in_flight}, {"timeout_ms", timeout}}, std::string(id));
+        return true;
+    }
+
+    bool undrain_backend(std::string_view id, std::string_view source) {
+        if (!started_ || stopped_) return false;
+        const auto b = backends_.find(id);
+        if (!b) return false;
+        BackendState s = b->state.load(std::memory_order_acquire);
+        do {
+            if (s != BackendState::Draining && s != BackendState::Drained) return false;
+        } while (!b->state.compare_exchange_weak(s, BackendState::Healthy, std::memory_order_acq_rel));
+        b->passive_failures_in_a_row.store(0);
+        {
+            std::lock_guard lock(drains_mutex_);
+            std::erase_if(drains_, [&](const Drain& d) { return d.id == id; });
+        }
+        events_->emit("drain_cancelled",
+                      std::string(id) + " back in service (" + std::string(source) + "), was " +
+                          std::string(to_string(s)),
+                      {{"source", source}, {"was", to_string(s)}}, std::string(id));
+        return true;
+    }
 
     ReloadResult reload(std::shared_ptr<const ConfigSnapshot> next, std::string_view source,
                         std::uint64_t content_hash = 0) {
@@ -289,6 +351,7 @@ public:
         const auto changes =
             backends_.reconcile(next, [this](const std::string& id) { return metrics_->register_series(id); });
         config_.publish(next);
+        apply_drain_directives(*next);
         content_hash_ = content_hash;
         std::string health_error;
         if (!start_health_checks(*backends_.topology(), &health_error)) {
@@ -386,6 +449,7 @@ private:
     void maintain() {
         const TimePoint now = Clock::now();
         backends_.sweep(now);
+        check_drains(now);
         sticky_->sweep(now);
         const std::uint64_t not_stored = sticky_->not_stored();
         if (not_stored != sticky_not_stored_reported_) {
@@ -396,6 +460,67 @@ private:
                               std::to_string(limit) + ")",
                           {{"not_stored", not_stored - sticky_not_stored_reported_}, {"max_entries", limit}});
             sticky_not_stored_reported_ = not_stored;
+        }
+    }
+
+    // Plan IV.12 precedence: the config changes a drain only when it says so explicitly.
+    void apply_drain_directives(const ConfigSnapshot& config) {
+        for (const auto& g : config.groups) {
+            for (const auto& b : g.backends) {
+                if (b.drain == DrainDirective::Start) drain_backend(b.id, "config");
+                else if (b.drain == DrainDirective::Cancel) undrain_backend(b.id, "config");
+            }
+        }
+    }
+
+    // Maintenance thread: a drain ends when its backend has nothing in flight (completed) or
+    // when timeouts.drain_ms expires (timed out: the rest are aborted). Either way the backend
+    // is then drained: out of service until a config or operator returns it.
+    void check_drains(TimePoint now) {
+        std::vector<Drain> drains;
+        {
+            std::lock_guard lock(drains_mutex_);
+            drains = drains_;
+        }
+        const auto timeout = std::chrono::milliseconds(config_.current()->timeouts.drain_ms);
+        for (const auto& d : drains) {
+            const auto b = backends_.find(d.id);
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - d.started).count();
+            bool finished = true;
+            if (!b) {
+                events_->emit("drain_ended", d.id + " left the config while draining", {{"reason", "removed"}}, d.id);
+            } else if (b->state.load() != BackendState::Draining) {
+                // Cancelled: undrain_backend() logged it.
+            } else if (b->in_flight.load() == 0) {
+                BackendState expected = BackendState::Draining;
+                if (b->state.compare_exchange_strong(expected, BackendState::Drained)) {
+                    b->pool.close_idle();
+                    drains_completed_.fetch_add(1);
+                    events_->emit("drain_completed",
+                                  d.id + " drained after " + std::to_string(elapsed_ms) +
+                                      " ms: no requests in flight, out of service",
+                                  {{"duration_ms", elapsed_ms}}, d.id);
+                }
+            } else if (now - d.started >= timeout) {
+                // Plan IV.12 / VI: abort the remaining requests (502), take the backend out.
+                const auto in_flight = b->in_flight.load();
+                std::size_t aborted = 0;
+                for (const auto& session : registry_.snapshot()) aborted += session->abort_for_drain(b.get()) ? 1 : 0;
+                BackendState expected = BackendState::Draining;
+                b->state.compare_exchange_strong(expected, BackendState::Drained);
+                b->pool.close_idle();
+                drains_timed_out_.fetch_add(1);
+                events_->emit("drain_timed_out",
+                              d.id + " drain timed out after " + std::to_string(timeout.count()) + " ms: " +
+                                  std::to_string(aborted) + " requests aborted, out of service",
+                              {{"timeout_ms", timeout.count()}, {"aborted", aborted}, {"in_flight", in_flight}}, d.id);
+            } else {
+                finished = false;
+            }
+            if (finished) {
+                std::lock_guard lock(drains_mutex_);
+                std::erase_if(drains_, [&](const Drain& x) { return x.id == d.id && x.started == d.started; });
+            }
         }
     }
 
@@ -514,6 +639,15 @@ private:
     std::unique_ptr<log::EventLog> events_;
     std::unique_ptr<metrics::Metrics> metrics_;
     std::unique_ptr<affinity::StickyTable> sticky_;
+    struct Drain {
+        std::string id;
+        TimePoint started;
+    };
+    std::mutex drains_mutex_;
+    std::vector<Drain> drains_;  // drains in progress (plan IV.12)
+    std::atomic<std::uint64_t> drains_started_{0};
+    std::atomic<std::uint64_t> drains_completed_{0};
+    std::atomic<std::uint64_t> drains_timed_out_{0};
     std::uint64_t sticky_not_stored_reported_ = 0;  // maintenance thread only
     std::atomic<SnapshotSink*> sink_{nullptr};
     std::string listen_address_;
@@ -544,6 +678,8 @@ std::vector<LoggedEvent> Engine::recent_events() const { return impl_->recent_ev
 bool Engine::set_backend_state(std::string_view backend_id, BackendState state) {
     return impl_->set_backend_state(backend_id, state);
 }
+bool Engine::drain_backend(std::string_view backend_id) { return impl_->drain_backend(backend_id, "api"); }
+bool Engine::undrain_backend(std::string_view backend_id) { return impl_->undrain_backend(backend_id, "api"); }
 ReloadResult Engine::reload(std::shared_ptr<const ConfigSnapshot> next, std::string_view source) {
     return impl_->reload(std::move(next), source);
 }

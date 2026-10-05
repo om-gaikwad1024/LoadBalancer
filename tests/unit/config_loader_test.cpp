@@ -35,7 +35,7 @@ json good_config() {
                      "recent_events": 200, "trace_requests": true },
       "timeouts": { "client_header_ms": 10000, "client_body_idle_ms": 20000, "client_keepalive_idle_ms": 30000,
                     "client_write_idle_ms": 40000, "backend_connect_ms": 3000, "backend_response_ms": 50000,
-                    "backend_idle_ms": 60000, "shutdown_grace_ms": 5000 },
+                    "backend_idle_ms": 60000, "shutdown_grace_ms": 5000, "drain_ms": 45000 },
       "trusted_proxies": [ "10.0.0.0/8", "192.168.1.7" ],
       "groups": [
         { "name": "web", "strategy": "round_robin", "host_header": "preserve",
@@ -44,15 +44,15 @@ json good_config() {
           "health": { "type": "http", "path": "/healthz", "interval_ms": 2000, "timeout_ms": 500,
                       "unhealthy_threshold": 3, "healthy_threshold": 2 },
           "backends": [
-            { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 3 },
-            { "id": "web-2", "address": "127.0.0.2", "port": 9002, "weight": 1 } ] },
+            { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 3, "drain": "keep" },
+            { "id": "web-2", "address": "127.0.0.2", "port": 9002, "weight": 1, "drain": "start" } ] },
         { "name": "api", "strategy": "least_connections", "host_header": "backend",
           "sticky": { "mode": "off", "cookie": null, "ttl_ms": 1000 },
           "passive_health": { "enabled": false, "consecutive_failures": 1, "count_5xx": false },
           "health": { "type": "tcp", "path": "/", "interval_ms": 1000, "timeout_ms": 1000,
                       "unhealthy_threshold": 1, "healthy_threshold": 5 },
           "backends": [
-            { "id": "api-1", "address": "10.0.0.5", "port": 7000, "weight": 1 } ] }
+            { "id": "api-1", "address": "10.0.0.5", "port": 7000, "weight": 1, "drain": "cancel" } ] }
       ],
       "routing": { "default_group": "web", "rules": [
         { "id": "api-path", "type": "path_prefix", "field": null, "value": "/api", "group": "api" },
@@ -152,6 +152,10 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.groups[0].sticky.ttl_ms, 600000u);
     EXPECT_EQ(c.groups[1].sticky.mode, lb::StickyConfig::Mode::Off);
     EXPECT_TRUE(c.groups[1].sticky.cookie.empty());
+    EXPECT_EQ(c.timeouts.drain_ms, 45000u);
+    EXPECT_EQ(c.groups[0].backends[0].drain, lb::DrainDirective::Keep);
+    EXPECT_EQ(c.groups[0].backends[1].drain, lb::DrainDirective::Start);
+    EXPECT_EQ(c.groups[1].backends[0].drain, lb::DrainDirective::Cancel);
     EXPECT_TRUE(c.groups[0].passive_health.enabled);
     EXPECT_EQ(c.groups[0].passive_health.consecutive_failures, 7u);
     EXPECT_TRUE(c.groups[0].passive_health.count_5xx);
@@ -336,6 +340,9 @@ INSTANTIATE_TEST_SUITE_P(WrongType, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/routing/default_group", 5, "expected a string"},
     BadValueCase{"/groups/0/sticky", "on", "expected an object"},
     BadValueCase{"/groups/0/passive_health", true, "expected an object"},
+    BadValueCase{"/groups/0/backends/0/drain", "yes", "must be \"keep\", \"start\" or \"cancel\""},
+    BadValueCase{"/groups/0/backends/0/drain", false, "expected a string"},
+    BadValueCase{"/timeouts/drain_ms", 0, "between 1 and"},
     BadValueCase{"/groups/0/passive_health/enabled", "yes", "expected true or false"},
     BadValueCase{"/groups/0/passive_health/consecutive_failures", 0, "between 1 and 10000"},
     BadValueCase{"/groups/0/passive_health/count_5xx", 1, "expected true or false"},

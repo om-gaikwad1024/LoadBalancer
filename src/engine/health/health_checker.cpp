@@ -136,6 +136,8 @@ void HealthChecker::run() {
 
 void HealthChecker::begin(Probe& p, TimePoint now) {
     p.next_start = now + std::chrono::milliseconds(p.config.interval_ms);
+    // A drained backend is out of service on purpose: it is not probed until it returns.
+    if (p.backend->state.load(std::memory_order_acquire) == BackendState::Drained) return;
     p.deadline = now + std::chrono::milliseconds(p.config.timeout_ms);
     p.sent = 0;
     p.received.clear();

@@ -37,7 +37,7 @@ nlohmann::json config_json(const Members& members, const std::function<void(nloh
     auto j = lbtest::make_proxy_config_json({});
     auto backends = nlohmann::json::array();
     for (const auto& [id, port] : members) {
-        backends.push_back({{"id", id}, {"address", "127.0.0.1"}, {"port", port}, {"weight", 1}});
+        backends.push_back({{"id", id}, {"address", "127.0.0.1"}, {"port", port}, {"weight", 1}, {"drain", "keep"}});
     }
     j["groups"][0]["backends"] = backends;
     if (tweak) tweak(j);

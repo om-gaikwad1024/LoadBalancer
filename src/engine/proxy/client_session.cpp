@@ -83,6 +83,19 @@ void ClientSession::force_close() {
     close_all(true);
 }
 
+bool ClientSession::abort_for_drain(const backend::BackendRuntime* backend) {
+    std::lock_guard lock(mutex_);
+    if (closed_ || drain_abort_ || !backend_in_use_ || backend_rt_.get() != backend) return false;
+    drain_abort_ = true;
+    if (pending_ == Pending::PoolWait) {
+        // Still queued: wake it now. Already granted: its wake is on the way.
+        if (ticket_ && backend_rt_->pool.cancel(ticket_)) ticket_->wake();
+    } else if (pending_ != Pending::None && op_.socket != INVALID_SOCKET) {
+        ::CancelIoEx(reinterpret_cast<HANDLE>(op_.socket), &op_.overlapped);
+    }
+    return true;
+}
+
 void ClientSession::on_io_complete(net::IoOp* /*op*/, DWORD bytes, DWORD error) noexcept {
     std::shared_ptr<ClientSession> keep;  // destroyed after the lock is released
     std::lock_guard lock(mutex_);
@@ -93,7 +106,13 @@ void ClientSession::on_io_complete(net::IoOp* /*op*/, DWORD bytes, DWORD error) 
         return;
     }
     try {
-        if (expired_ != Deadline::None) {
+        if (drain_abort_) {
+            // The drain timeout cancelled this I/O; whatever it carried is discarded.
+            drain_abort_ = false;
+            expired_ = Deadline::None;
+            if (kind == Pending::PoolWait) on_pool_ticket(/*session_closed=*/true);  // hand back any grant
+            handle_drain_abort();
+        } else if (expired_ != Deadline::None) {
             // The timer cancelled this I/O; whatever it carried is discarded.
             handle_timeout(std::exchange(expired_, Deadline::None));
         } else {
@@ -945,6 +964,26 @@ void ClientSession::on_deadline(std::uint64_t generation) noexcept {
     if (pending_ != Pending::None && pending_ != Pending::PoolWait && op_.socket != INVALID_SOCKET) {
         ::CancelIoEx(reinterpret_cast<HANDLE>(op_.socket), &op_.overlapped);
     }
+}
+
+// Plan IV.12 / VI: a drain timeout aborts the remaining requests. Not the backend's fault, so
+// it counts against neither its health nor its metrics.
+void ClientSession::handle_drain_abort() {
+    ctx_.counters->drain_aborts.fetch_add(1, std::memory_order_relaxed);
+    const std::uint32_t timeout = config_ ? config_->timeouts.drain_ms : 0;
+    log_event("drain_aborted",
+              "request to draining backend " + backend_rt_->id + " aborted: drain timeout (" + std::to_string(timeout) +
+                  " ms)" + (response_flushed_ ? "; client connection cut mid-response" : ": 502"),
+              {{"timeout_ms", timeout}});
+    if (!response_flushed_) {
+        trace(TraceStep::TimedOut, 502);
+        fail_request(502, /*backend_fault=*/false);
+        return;
+    }
+    trace(TraceStep::Aborted);
+    end_backend_use(BackendOutcome::NotJudged);
+    record_outcome(0);
+    close_all(true);
 }
 
 // Plan VI "On expiry" column.

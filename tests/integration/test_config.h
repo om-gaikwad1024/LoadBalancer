@@ -23,7 +23,8 @@ inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& b
         backends.push_back({{"id", "b" + std::to_string(i + 1)},
                             {"address", "127.0.0.1"},
                             {"port", backend_ports[i]},
-                            {"weight", 1}});
+                            {"weight", 1},
+                            {"drain", "keep"}});
     }
     nlohmann::json j = {
         {"listen", {{"address", "127.0.0.1"}, {"port", 0}, {"backlog", 256}, {"pending_accepts", 8}}},
@@ -65,7 +66,8 @@ inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& b
           {"backend_connect_ms", 3000},
           {"backend_response_ms", 10000},
           {"backend_idle_ms", 10000},
-          {"shutdown_grace_ms", 5000}}},
+          {"shutdown_grace_ms", 5000},
+          {"drain_ms", 30000}}},
         {"trusted_proxies", nlohmann::json::array()},
         {"groups",
          {{{"name", "web"},

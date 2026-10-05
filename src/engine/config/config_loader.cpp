@@ -368,7 +368,8 @@ void build_timeouts(const json& root, Validator& v, ConfigSnapshot& out) {
     if (j == nullptr ||
         !v.check_object(*j, path,
                         {"client_header_ms", "client_body_idle_ms", "client_keepalive_idle_ms", "client_write_idle_ms",
-                         "backend_connect_ms", "backend_response_ms", "backend_idle_ms", "shutdown_grace_ms"})) {
+                         "backend_connect_ms", "backend_response_ms", "backend_idle_ms", "shutdown_grace_ms",
+                         "drain_ms"})) {
         return;
     }
     TimeoutsConfig& t = out.timeouts;
@@ -383,6 +384,7 @@ void build_timeouts(const json& root, Validator& v, ConfigSnapshot& out) {
     set("backend_response_ms", 1, t.backend_response_ms);
     set("backend_idle_ms", 1, t.backend_idle_ms);
     set("shutdown_grace_ms", 0, t.shutdown_grace_ms);
+    set("drain_ms", 1, t.drain_ms);
 }
 
 // "a.b.c.d/n" or a single address ("a.b.c.d" = /32). Host bits beyond the prefix are an error,
@@ -619,7 +621,7 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
             for (std::size_t bi = 0; bi < bj->size(); ++bi) {
                 const json& b = (*bj)[bi];
                 const std::string p = child(bpath, bi);
-                if (!v.check_object(b, p, {"id", "address", "port", "weight"})) continue;
+                if (!v.check_object(b, p, {"id", "address", "port", "weight", "drain"})) continue;
 
                 BackendConfig backend;
                 if (auto id = v.get_name(b, p, "id")) {
@@ -631,6 +633,12 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
                 const auto port = v.get_uint(b, p, "port", 1, kMaxPort);
                 if (const auto weight = v.get_uint(b, p, "weight", kMinWeight, kMaxWeight)) {
                     backend.weight = static_cast<std::uint32_t>(*weight);
+                }
+                if (const auto drain = v.get_string(b, p, "drain")) {
+                    if (*drain == "keep") backend.drain = DrainDirective::Keep;
+                    else if (*drain == "start") backend.drain = DrainDirective::Start;
+                    else if (*drain == "cancel") backend.drain = DrainDirective::Cancel;
+                    else v.error(child(p, "drain"), "must be \"keep\", \"start\" or \"cancel\"");
                 }
                 if (address && port) {
                     backend.address = *address;
