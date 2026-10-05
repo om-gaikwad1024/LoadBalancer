@@ -188,15 +188,16 @@ TEST_F(ProxyTest, DebugTraceShowsEveryStepOfARequestInOrder) {
     start_proxy({port}, [](nlohmann::json& j) { j["event_log"]["trace_requests"] = true; });
     const auto ok = fetch(proxy_port(), "/traced");
     ASSERT_EQ(ok.status, 200);
-    const std::vector<std::string> success = {"request_received",  "backend_selected",  "backend_connected",
-                                              "request_forwarded", "response_received", "response_completed"};
+    const std::vector<std::string> success = {"request_received",  "group_routed",      "backend_selected",
+                                              "backend_connected", "request_forwarded", "response_received",
+                                              "response_completed"};
     EXPECT_TRUE(eventually([&] { return steps_of(events_of_request(engine(), ok.header("x-request-id"))) == success; }));
 
     backend().stop();
     const auto failed = fetch(proxy_port(), "/traced-error");
     ASSERT_EQ(failed.status, 502);
-    const std::vector<std::string> error_path = {"request_received", "backend_selected", "error_response",
-                                                 "response_completed"};
+    const std::vector<std::string> error_path = {"request_received", "group_routed", "backend_selected",
+                                                 "error_response", "response_completed"};
     const std::string id = failed.header("x-request-id");
     EXPECT_TRUE(eventually([&] { return steps_of(events_of_request(engine(), id)) == error_path; }));
     EXPECT_TRUE(has_event(engine(), "backend_error", id));

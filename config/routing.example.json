@@ -38,7 +38,7 @@
     "max_backend_series": 256
   },
   "event_log": {
-    "path": "logs/lb-events.jsonl",
+    "path": "logs/lb-routing-events.jsonl",
     "max_file_bytes": 10485760,
     "max_files": 5,
     "max_queue": 100000,
@@ -82,14 +82,73 @@
         "healthy_threshold": 2
       },
       "backends": [
-        { "id": "web-1", "address": "127.0.0.1", "port": 9001, "weight": 1 },
-        { "id": "web-2", "address": "127.0.0.1", "port": 9002, "weight": 1 },
-        { "id": "web-3", "address": "127.0.0.1", "port": 9003, "weight": 1 }
+        {
+          "id": "web-1",
+          "address": "127.0.0.1",
+          "port": 9001,
+          "weight": 1
+        },
+        {
+          "id": "web-2",
+          "address": "127.0.0.1",
+          "port": 9002,
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "name": "api",
+      "strategy": "least_response_time",
+      "host_header": "preserve",
+      "health": {
+        "type": "http",
+        "path": "/health",
+        "interval_ms": 2000,
+        "timeout_ms": 1000,
+        "unhealthy_threshold": 3,
+        "healthy_threshold": 2
+      },
+      "backends": [
+        {
+          "id": "api-1",
+          "address": "127.0.0.1",
+          "port": 9003,
+          "weight": 1
+        }
       ]
     }
   ],
   "routing": {
     "default_group": "web",
-    "rules": []
+    "rules": [
+      {
+        "id": "api-path",
+        "type": "path_prefix",
+        "field": null,
+        "value": "/api",
+        "group": "api"
+      },
+      {
+        "id": "api-header",
+        "type": "header",
+        "field": "X-Group",
+        "value": "api",
+        "group": "api"
+      },
+      {
+        "id": "beta-cookie",
+        "type": "cookie",
+        "field": "beta",
+        "value": null,
+        "group": "api"
+      },
+      {
+        "id": "reports",
+        "type": "path_glob",
+        "field": null,
+        "value": "/reports/*.csv",
+        "group": "api"
+      }
+    ]
   }
 }

@@ -9,6 +9,7 @@ namespace lb {
 // through them is fixed; tests and (from step 1.9) the debug event log record it.
 enum class TraceStep : std::uint8_t {
     RequestReceived,    // request head parsed
+    GroupRouted,        // content routing chose the group (plan IV.8)
     BackendSelected,
     BackendConnected,
     RequestForwarded,   // whole request sent to the backend

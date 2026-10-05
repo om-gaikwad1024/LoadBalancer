@@ -2,7 +2,7 @@
 
 HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Reference: `docs/plan.md` (section numbers below point into it).
 
-**Current step:** 2.2 strategies done — waiting for review/commit; next: 2.3 content routing
+**Current step:** 2.3 content routing done — waiting for review/commit; next: 2.4 sticky sessions
 
 ## Rules
 - Read only the `docs/plan.md` sections listed for the current step. Never read the whole plan again, and never re-read the PDF.
@@ -29,7 +29,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 | `tests/integration/test_*.h` | test HTTP client (own reader) and child-process helper for kill tests |
 | `tools/k6/` | `constant_rate.js`, `soak.js` (constant-arrival-rate only) |
 | `tools/scripts/` | `bench.ps1`, `kill_test.ps1`, `soak.ps1` (+ `common.ps1`); results in `build\gate\<name>-<time>\results.json`; configs `config/bench.json`, `killtest.json`, `soak.json` |
-| `config/` | complete example configs; `lb.example.json` must stay valid (unit test loads it) |
+| `config/` | complete example configs (`lb.example.json`, `routing.example.json`); every `*.json` here must stay valid (unit test loads them) |
 | `docs/` | `plan.md`, original PDF, `benchmarks.md`, `config-reference.md` |
 | `cmake/`, `CMakePresets.json`, `vcpkg.json` | build setup (presets `debug`, `release`, `asan` = all tests under ASan, `fuzz`; triplet x64-windows) |
 
@@ -50,7 +50,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 ### Phase 2 — Smart routing and live operations
 - [x] 2.1 Hot reload: watcher + debounce, validate-then-swap, content hash (IV.14)
 - [x] 2.2 Weighted RR, least response time (EWMA), IP hash (IV.7)
-- [ ] 2.3 Content routing: path, header, cookie (IV.8)
+- [x] 2.3 Content routing: path, header, cookie (IV.8)
 - [ ] 2.4 Sticky sessions per group, after routing (IV.9, III)
 - [ ] 2.5 Passive health checks (IV.10)
 - [ ] 2.6 Graceful drain (IV.12)

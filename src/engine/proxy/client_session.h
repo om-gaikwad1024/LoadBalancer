@@ -110,7 +110,8 @@ private:
     // Gives the backend connection back to its pool (reusable) or closes it, freeing the slot.
     void close_backend(bool reusable = false) noexcept;
     void close_all(bool abortive) noexcept;
-    void trace(TraceStep step, int status = 0) const noexcept;
+    // `detail` goes only to the debug event log (event_log.trace_requests).
+    void trace(TraceStep step, int status = 0, std::string_view detail = {}) const noexcept;
 
     SessionContext& ctx_;
     std::mutex mutex_;

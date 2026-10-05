@@ -7,6 +7,7 @@ namespace lb {
 std::string_view to_string(TraceStep step) noexcept {
     switch (step) {
         case TraceStep::RequestReceived: return "request_received";
+        case TraceStep::GroupRouted: return "group_routed";
         case TraceStep::BackendSelected: return "backend_selected";
         case TraceStep::BackendConnected: return "backend_connected";
         case TraceStep::RequestForwarded: return "request_forwarded";

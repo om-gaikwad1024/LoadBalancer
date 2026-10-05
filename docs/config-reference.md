@@ -133,7 +133,10 @@ Events written: `engine_started`, `engine_stopped`, `backend_marked_unhealthy` (
 (`status`, `reason`), `response_aborted`, `timeout` (client-side timeouts except keep-alive idle),
 `retry` and `retry_result` (stale pooled connection), `config_watch_started`,
 `config_reload_accepted` (`source`, `added`, `removed`, `reweighted`), `config_reload_rejected`
-(`source`, `errors`), `health_checks_not_restarted`, and `request_step` in debug mode. Malformed
+(`source`, `errors`), `health_checks_not_restarted`, and `request_step` in debug mode. In debug mode
+the steps are `request_received`, `group_routed` (with the group and the rule, or `default`),
+`backend_selected`, `backend_connected`, `request_forwarded`, `response_received` and
+`response_completed`, plus `error_response`, `aborted` and `timed_out` on error paths. Malformed
 requests and keep-alive idle closes are counted but not logged, since they're common and
 client-controlled.
 
@@ -252,7 +255,53 @@ Each backend:
 | `groups[].backends[].port` | integer | 1–65535 | Backend port. The same `address:port` may not appear twice in one group (it may appear in different groups) |
 | `groups[].backends[].weight` | integer | 1–1000 | Relative capacity, used by `weighted_round_robin` and `ip_hash` and shown on the dashboard |
 
-## `routing` (plan IV.8)
+## `routing`: content-aware routing (plan IV.8)
+Routing picks the **group** for every request. It runs before session affinity and load
+balancing (plan III), so a client with a sticky backend in one group still reaches the group its
+request routes to. The rules are tried **in array order and the first match wins**; a request
+that matches none goes to `default_group`. Routing never falls back to another group: if the
+chosen group has no eligible backend, the request gets **503**, logged as `no_backend_available`
+with the group and the rule that chose it. Every request on a keep-alive connection is routed on
+its own. Matching allocates nothing and takes no lock. Rules apply live on reload, from the next
+request.
+
 | Field | Type | Valid range | Meaning |
 |---|---|---|---|
-| `routing.default_group` | string | name of an existing group | Group that receives a request when no routing rule matches. In phase 1 every request goes here |
+| `routing.default_group` | string | name of an existing group | Group for requests that no rule matches |
+| `routing.rules` | array | may be empty | Routing rules in priority order |
+
+Each rule has all five fields:
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `rules[].id` | string | name rules; unique among rules | Shown in the debug trace and in `no_backend_available` events |
+| `rules[].type` | string | `"path_prefix"`, `"path_glob"`, `"header"` or `"cookie"` | What the rule matches |
+| `rules[].field` | string or `null` | `null` for path rules; a header or cookie name (1–256 token characters) otherwise | Which header or cookie to look at |
+| `rules[].value` | string or `null` | path rules: starts with `/`, visible ASCII, no `?` or `#`, at most 1024 characters. Header and cookie rules: visible ASCII (headers may contain inner spaces) without leading or trailing spaces, at most 1024 characters, or `null` | What must match; `null` (header and cookie rules only) means the header or cookie just has to be present |
+| `rules[].group` | string | name of an existing group | Group a matching request goes to |
+
+How each type matches:
+
+| Type | Matches when |
+|---|---|
+| `path_prefix` | The path equals `value` or continues it with a new segment: `/api` matches `/api`, `/api/` and `/api/v1`, but not `/apiary`. A `value` ending in `/` matches everything below it |
+| `path_glob` | The whole path matches `value`, where `*` matches any run of characters, including `/`: `/reports/*.csv` matches `/reports/2026/q1.csv`. Worst case O(path × pattern), never exponential |
+| `header` | A header named `field` (case-insensitive) is present and, unless `value` is `null`, one of its lines has exactly `value` (case-sensitive, surrounding spaces ignored) |
+| `cookie` | A cookie named `field` (case-sensitive) is present in a `Cookie` header and, unless `value` is `null`, has exactly `value` (surrounding double quotes removed) |
+
+The path is the request target up to `?` or `#`; an absolute-form target (`http://host/path`)
+uses its path. It is compared **as sent**: no percent-decoding, no case folding and no `.`/`..`
+removal. Routing chooses where a request goes; it is not an access-control mechanism.
+
+Example (also in [`config/routing.example.json`](../config/routing.example.json)):
+```json
+"routing": {
+  "default_group": "web",
+  "rules": [
+    { "id": "api-path",    "type": "path_prefix", "field": null,      "value": "/api",           "group": "api" },
+    { "id": "api-header",  "type": "header",      "field": "X-Group", "value": "api",            "group": "api" },
+    { "id": "beta-cookie", "type": "cookie",      "field": "beta",    "value": null,             "group": "api" },
+    { "id": "reports",     "type": "path_glob",   "field": null,      "value": "/reports/*.csv", "group": "api" }
+  ]
+}
+```

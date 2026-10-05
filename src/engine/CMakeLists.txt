@@ -40,6 +40,8 @@ add_library(lb_engine STATIC
   net/iocp.cpp
   net/listener.h
   net/listener.cpp
+  routing/router.h
+  routing/router.cpp
   proxy/trace.h
   proxy/forwarding.h
   proxy/forwarding.cpp

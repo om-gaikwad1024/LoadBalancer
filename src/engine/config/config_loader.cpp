@@ -590,15 +590,97 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
     return v.errors.size() == errors_before;
 }
 
+// RFC 9110 token characters: header field names; cookie names use the same set (RFC 6265).
+bool is_token(std::string_view s) noexcept {
+    constexpr std::string_view extra = "!#$%&'*+-.^_`|~";
+    return !s.empty() && std::all_of(s.begin(), s.end(), [&](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+               extra.find(c) != std::string_view::npos;
+    });
+}
+
+bool visible_ascii(std::string_view s, bool allow_inner_space) noexcept {
+    return std::all_of(s.begin(), s.end(), [&](char c) { return (c > 0x20 && c < 0x7F) || (allow_inner_space && c == ' '); }) &&
+           (s.empty() || (s.front() != ' ' && s.back() != ' '));
+}
+
+void build_route_rule(const json& r, const std::string& p, Validator& v, ConfigSnapshot& out, bool groups_valid,
+                      std::vector<std::string>& ids) {
+    if (!v.check_object(r, p, {"id", "type", "field", "value", "group"})) return;
+    RouteRule rule;
+    if (auto id = v.get_name(r, p, "id")) {
+        if (std::find(ids.begin(), ids.end(), *id) != ids.end()) v.error(child(p, "id"), "duplicate rule id \"" + *id + "\"");
+        ids.push_back(*id);
+        rule.id = *id;
+    }
+    bool path_rule = false;
+    bool type_ok = false;
+    if (auto type = v.get_string(r, p, "type")) {
+        type_ok = true;
+        if (*type == "path_prefix") rule.type = RouteRule::Type::PathPrefix, path_rule = true;
+        else if (*type == "path_glob") rule.type = RouteRule::Type::PathGlob, path_rule = true;
+        else if (*type == "header") rule.type = RouteRule::Type::Header;
+        else if (*type == "cookie") rule.type = RouteRule::Type::Cookie;
+        else {
+            type_ok = false;
+            v.error(child(p, "type"), "must be \"path_prefix\", \"path_glob\", \"header\" or \"cookie\"");
+        }
+    }
+    if (const json* f = Validator::field(r, "field"); f != nullptr && type_ok) {
+        if (path_rule) {
+            if (!f->is_null()) v.error(child(p, "field"), "must be null for path rules");
+        } else if (!f->is_string() || !is_token(f->get<std::string>()) || f->get<std::string>().size() > 256) {
+            v.error(child(p, "field"), std::string(rule.type == RouteRule::Type::Header ? "header" : "cookie") +
+                                           " name: 1-256 token characters (RFC 9110)");
+        } else {
+            rule.field = f->get<std::string>();
+        }
+    }
+    if (const json* val = Validator::field(r, "value"); val != nullptr && type_ok) {
+        if (val->is_null()) {
+            if (path_rule) v.error(child(p, "value"), "a path rule needs a path");
+        } else if (!val->is_string()) {
+            v.error(child(p, "value"), "expected a string or null");
+        } else {
+            const std::string s = val->get<std::string>();
+            if (path_rule && (s.empty() || s.front() != '/' || s.size() > 1024 || !visible_ascii(s, false) ||
+                              s.find_first_of("?#") != std::string::npos)) {
+                v.error(child(p, "value"), "must start with '/' and be visible ASCII without '?' or '#' (max 1024)");
+            } else if (!path_rule && (s.size() > 1024 || !visible_ascii(s, rule.type == RouteRule::Type::Header))) {
+                v.error(child(p, "value"), "must be visible ASCII without leading or trailing spaces (max 1024)");
+            } else {
+                rule.value = s;
+            }
+        }
+    }
+    if (auto group = v.get_name(r, p, "group")) {
+        if (groups_valid && out.find_group(*group) == nullptr) {
+            v.error(child(p, "group"), "unknown group \"" + *group + "\"");
+        }
+        rule.group = *group;
+    }
+    out.routing.rules.push_back(std::move(rule));
+}
+
 void build_routing(const json& root, Validator& v, ConfigSnapshot& out, bool groups_valid) {
     const std::string path = "/routing";
     const json* j = Validator::field(root, "routing");
-    if (j == nullptr || !v.check_object(*j, path, {"default_group"})) return;
+    if (j == nullptr || !v.check_object(*j, path, {"default_group", "rules"})) return;
     if (auto name = v.get_string(*j, path, "default_group")) {
         if (groups_valid && out.find_group(*name) == nullptr) {
             v.error(child(path, "default_group"), "unknown group \"" + *name + "\"");
         }
         out.routing.default_group = *name;
+    }
+    const json* rules = Validator::field(*j, "rules");
+    if (rules == nullptr) return;
+    if (!rules->is_array()) {
+        v.error(child(path, "rules"), "expected an array (it may be empty)");
+        return;
+    }
+    std::vector<std::string> ids;
+    for (std::size_t i = 0; i < rules->size(); ++i) {
+        build_route_rule((*rules)[i], child(child(path, "rules"), std::to_string(i)), v, out, groups_valid, ids);
     }
 }
 

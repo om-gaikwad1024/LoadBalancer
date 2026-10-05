@@ -205,8 +205,9 @@ TEST_F(ProxyTest, BackendDownGives502) {
     const auto r = fetch(proxy_port(), "/");
     EXPECT_EQ(r.status, 502);
     EXPECT_EQ(r.header("connection"), "close");
-    const std::vector<TraceStep> expected = {TraceStep::RequestReceived, TraceStep::BackendSelected,
-                                             TraceStep::ErrorResponse, TraceStep::ResponseCompleted};
+    const std::vector<TraceStep> expected = {TraceStep::RequestReceived, TraceStep::GroupRouted,
+                                             TraceStep::BackendSelected, TraceStep::ErrorResponse,
+                                             TraceStep::ResponseCompleted};
     EXPECT_TRUE(eventually([&] { return trace().steps_of_last_request() == expected; }));
 }
 
@@ -283,8 +284,9 @@ TEST_F(ProxyTest, ConnectionsOverTheLimitGet503) {
 TEST_F(ProxyTest, TraceShowsTheFixedStepOrder) {
     start_proxy({start_backend()});
     ASSERT_EQ(fetch(proxy_port(), "/").status, 200);
-    const std::vector<TraceStep> expected = {TraceStep::RequestReceived,  TraceStep::BackendSelected,
-                                             TraceStep::BackendConnected, TraceStep::RequestForwarded,
-                                             TraceStep::ResponseReceived, TraceStep::ResponseCompleted};
+    const std::vector<TraceStep> expected = {TraceStep::RequestReceived,  TraceStep::GroupRouted,
+                                             TraceStep::BackendSelected,  TraceStep::BackendConnected,
+                                             TraceStep::RequestForwarded, TraceStep::ResponseReceived,
+                                             TraceStep::ResponseCompleted};
     EXPECT_TRUE(eventually([&] { return trace().steps_of_last_request() == expected; }));
 }

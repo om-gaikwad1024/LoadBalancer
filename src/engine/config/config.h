@@ -162,8 +162,25 @@ struct GroupConfig {
     HealthConfig health;
 };
 
+// One content-routing rule (plan IV.8). Rules are tried in order; the first match picks
+// the group, and a request no rule matches goes to default_group.
+struct RouteRule {
+    enum class Type : std::uint8_t {
+        PathPrefix,  // the path is `value` or continues it with a new segment
+        PathGlob,    // the whole path matches `value`; '*' matches any run of characters
+        Header,      // header `field` is present (value null) or has exactly `value`
+        Cookie,      // cookie `field` is present (value null) or has exactly `value`
+    };
+    std::string id;
+    Type type = Type::PathPrefix;
+    std::string field;                 // header or cookie name; empty for path rules
+    std::optional<std::string> value;  // empty optional: presence only (header and cookie rules)
+    std::string group;
+};
+
 struct RoutingConfig {
     std::string default_group;
+    std::vector<RouteRule> rules;  // priority order: first match wins
 };
 
 struct ConfigSnapshot {

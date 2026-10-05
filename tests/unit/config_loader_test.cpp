@@ -49,7 +49,11 @@ json good_config() {
           "backends": [
             { "id": "api-1", "address": "10.0.0.5", "port": 7000, "weight": 1 } ] }
       ],
-      "routing": { "default_group": "web" }
+      "routing": { "default_group": "web", "rules": [
+        { "id": "api-path", "type": "path_prefix", "field": null, "value": "/api", "group": "api" },
+        { "id": "static", "type": "path_glob", "field": null, "value": "/static/*.css", "group": "web" },
+        { "id": "beta-header", "type": "header", "field": "X-Beta", "value": "on", "group": "api" },
+        { "id": "any-canary", "type": "cookie", "field": "canary", "value": null, "group": "api" } ] }
     })");
 }
 
@@ -177,6 +181,20 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.groups[0].backends[0].weight, 3u);
     EXPECT_EQ(c.groups[1].backends[0].id, "api-1");
     EXPECT_EQ(c.routing.default_group, "web");
+    ASSERT_EQ(c.routing.rules.size(), 4u);
+    EXPECT_EQ(c.routing.rules[0].id, "api-path");
+    EXPECT_EQ(c.routing.rules[0].type, lb::RouteRule::Type::PathPrefix);
+    EXPECT_TRUE(c.routing.rules[0].field.empty());
+    EXPECT_EQ(c.routing.rules[0].value, "/api");
+    EXPECT_EQ(c.routing.rules[0].group, "api");
+    EXPECT_EQ(c.routing.rules[1].type, lb::RouteRule::Type::PathGlob);
+    EXPECT_EQ(c.routing.rules[1].value, "/static/*.css");
+    EXPECT_EQ(c.routing.rules[2].type, lb::RouteRule::Type::Header);
+    EXPECT_EQ(c.routing.rules[2].field, "X-Beta");
+    EXPECT_EQ(c.routing.rules[2].value, "on");
+    EXPECT_EQ(c.routing.rules[3].type, lb::RouteRule::Type::Cookie);
+    EXPECT_EQ(c.routing.rules[3].field, "canary");
+    EXPECT_FALSE(c.routing.rules[3].value.has_value());
     ASSERT_NE(c.find_group("api"), nullptr);
     EXPECT_EQ(c.find_group("nope"), nullptr);
 }
@@ -299,7 +317,24 @@ INSTANTIATE_TEST_SUITE_P(WrongType, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/groups/0/backends", "web-1", "expected an array"},
     BadValueCase{"/groups/0/backends/1", 5, "expected an object"},
     BadValueCase{"/groups/0/backends/0/weight", "3", "expected an integer"},
-    BadValueCase{"/routing/default_group", 5, "expected a string"}), bad_value_name);
+    BadValueCase{"/routing/default_group", 5, "expected a string"},
+    BadValueCase{"/routing/rules", json::object(), "expected an array"},
+    BadValueCase{"/routing/rules/0", "x", "expected an object"},
+    BadValueCase{"/routing/rules/0/type", "regex", "must be \"path_prefix\", \"path_glob\", \"header\" or \"cookie\""},
+    BadValueCase{"/routing/rules/0/field", "X-Path", "must be null for path rules"},
+    BadValueCase{"/routing/rules/0/value", nullptr, "a path rule needs a path"},
+    BadValueCase{"/routing/rules/0/value", "api", "must start with '/'"},
+    BadValueCase{"/routing/rules/0/value", "/api?x=1", "without '?' or '#'"},
+    BadValueCase{"/routing/rules/0/value", 7, "expected a string or null"},
+    BadValueCase{"/routing/rules/1/value", "/static/a b.css", "must start with '/'"},
+    BadValueCase{"/routing/rules/2/field", nullptr, "header name"},
+    BadValueCase{"/routing/rules/2/field", "X Beta", "header name"},
+    BadValueCase{"/routing/rules/2/value", " on", "without leading or trailing spaces"},
+    BadValueCase{"/routing/rules/3/field", "can;ary", "cookie name"},
+    BadValueCase{"/routing/rules/3/value", "a b", "visible ASCII"},
+    BadValueCase{"/routing/rules/0/group", "nope", "unknown group \"nope\""},
+    BadValueCase{"/routing/rules/1/id", "api-path", "duplicate rule id \"api-path\""},
+    BadValueCase{"/routing/rules/0/id", "has space", "characters of [A-Za-z0-9._-]"}), bad_value_name);
 
 INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/listen/port", 65536, "between 0 and 65535"},

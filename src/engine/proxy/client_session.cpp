@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "core/debug_assert.h"
+#include "routing/router.h"
 
 namespace lb::proxy {
 
@@ -455,9 +456,16 @@ void ClientSession::on_request_head() {
     is_head_ = req.method == "HEAD";
     backend_chunked_ = req.framing == http::BodyFraming::Chunked;
 
-    // Phase 1 routing: every request goes to the default group (content routing: step 2.3).
-    // The group's balancer picks among healthy, non-draining backends (plan IV.7).
-    if (const auto group = topology_->find_group(config_->routing.default_group)) {
+    // Plan III order: content routing picks the group for every request (IV.8), then the
+    // group's balancer picks among its healthy, non-draining backends (IV.7).
+    const routing::RouteDecision route = routing::route(config_->routing, req);
+    const std::string& group_name = *route.group;
+    std::string route_detail;  // built only for the debug event log
+    if (ctx_.events != nullptr && ctx_.events->trace_requests()) {
+        route_detail = group_name + (route.rule != nullptr ? " (rule " + route.rule->id + ")" : " (default)");
+    }
+    trace(TraceStep::GroupRouted, 0, route_detail);
+    if (const auto group = topology_->find_group(group_name)) {
         balance::PickContext pick;
         pick.now = Clock::now();
         pick.response_time_expiry = std::chrono::milliseconds(config_->balancing.response_time_expiry_ms);
@@ -470,9 +478,8 @@ void ClientSession::on_request_head() {
         // Plan IV.7/VI: no eligible backend is answered at once with 503, never a hang, and
         // logged loudly: this is the one case where clients correctly see an error.
         ctx_.counters->no_backend_available.fetch_add(1, std::memory_order_relaxed);
-        log_event("no_backend_available",
-                  "no healthy, non-draining backend in group " + config_->routing.default_group + ": 503",
-                  {{"group", config_->routing.default_group}});
+        log_event("no_backend_available", "no healthy, non-draining backend in group " + group_name + ": 503",
+                  {{"group", group_name}, {"rule", route.rule != nullptr ? route.rule->id : std::string()}});
         fail_request(503, /*backend_fault=*/false);
         return;
     }
@@ -905,15 +912,16 @@ void ClientSession::close_all(bool abortive) noexcept {
     }
 }
 
-void ClientSession::trace(TraceStep step, int status) const noexcept {
+void ClientSession::trace(TraceStep step, int status, std::string_view detail) const noexcept {
     if (TraceSink* sink = ctx_.trace->load(std::memory_order_acquire)) {
         sink->on_trace(TraceEvent{request_id_, step, status});
     }
     // Plan IV.18: in debug logging mode every step of every request goes to the event log.
     if (ctx_.events != nullptr && ctx_.events->trace_requests() && request_id_ != 0) {
-        const std::string name(to_string(step));
-        log_event("request_step", status != 0 ? name + " " + std::to_string(status) : name,
-                  {{"step", name}, {"status", status}});
+        std::string message(to_string(step));
+        if (status != 0) message += " " + std::to_string(status);
+        if (!detail.empty()) message += ": " + std::string(detail);
+        log_event("request_step", message, {{"step", to_string(step)}, {"status", status}, {"detail", detail}});
     }
 }
 

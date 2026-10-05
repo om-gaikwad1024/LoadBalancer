@@ -298,6 +298,19 @@ TEST_F(MockBackend, StopIsPromptEvenWhileARequestSleeps) {
     EXPECT_NE(c.read_response().end, End::Complete);
 }
 
+// An idle keep-alive connection (what a proxy's pool holds) must not hold stop() until the
+// peer closes it: on Windows shutdown() alone does not wake the serving thread's recv().
+TEST_F(MockBackend, StopIsPromptWithAnIdleKeepAliveConnection) {
+    start();
+    TestClient c(port());
+    ASSERT_TRUE(c.send(get_request("/")));
+    ASSERT_EQ(c.read_response().status, 200);  // the connection stays open, idle
+    const auto t0 = std::chrono::steady_clock::now();
+    server().stop();
+    EXPECT_LT(elapsed_ms(t0), 1000.0);
+    EXPECT_NE(c.wait_for_close(), End::Timeout);  // and the client sees it close
+}
+
 TEST_F(MockBackend, CanRestartOnTheSamePort) {
     start();
     const std::uint16_t p = port();

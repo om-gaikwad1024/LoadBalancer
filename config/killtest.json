@@ -98,7 +98,10 @@
                    }
                ],
     "routing":  {
-                    "default_group":  "web"
+                    "default_group":  "web",
+                    "rules":  [
+
+                              ]
                 },
     "config_reload":  {
                           "watch_file":  false,

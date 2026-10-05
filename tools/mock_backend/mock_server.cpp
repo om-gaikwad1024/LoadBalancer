@@ -256,11 +256,23 @@ void MockServer::stop() {
         std::lock_guard lock(connections_mutex_);
         remaining.swap(connections_);
     }
+    // shutdown() sends FIN, but on Windows it does not wake a recv() blocked in the serving
+    // thread: a keep-alive connection the peer left idle (a pooled proxy connection) would
+    // hold stop() until the peer closed it. A blocking Winsock call waits on an internal
+    // overlapped operation, which CancelIoEx on the socket aborts, so the recv() fails at once.
+    // Repeat until the thread is done, in case it was between calls when cancelled.
     for (auto& c : remaining) {
         std::lock_guard lock(c->socket_mutex);
-        if (c->socket != INVALID_SOCKET) ::shutdown(c->socket, SD_BOTH);  // unblocks recv()
+        if (c->socket != INVALID_SOCKET) ::shutdown(c->socket, SD_BOTH);
     }
     for (auto& c : remaining) {
+        while (c->thread.joinable() && !c->done.load()) {
+            {
+                std::lock_guard lock(c->socket_mutex);  // the socket stays open while we hold it
+                if (c->socket != INVALID_SOCKET) ::CancelIoEx(reinterpret_cast<HANDLE>(c->socket), nullptr);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         if (c->thread.joinable()) c->thread.join();
     }
 

@@ -80,7 +80,7 @@ inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& b
              {"unhealthy_threshold", 3},
              {"healthy_threshold", 2}}},
            {"backends", backends}}}},
-        {"routing", {{"default_group", "web"}}},
+        {"routing", {{"default_group", "web"}, {"rules", nlohmann::json::array()}}},
     };
     if (tweak) tweak(j);
     return j;
