@@ -45,6 +45,7 @@ add_executable(lb_integration_tests
   integration/proxy_reload_test.cpp
   integration/proxy_routing_test.cpp
   integration/proxy_sticky_test.cpp
+  integration/proxy_passive_health_test.cpp
 )
 target_link_libraries(lb_integration_tests PRIVATE
   lb_engine mock_backend_lib nlohmann_json::nlohmann_json GTest::gtest GTest::gtest_main)

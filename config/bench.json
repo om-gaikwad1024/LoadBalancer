@@ -67,6 +67,11 @@
                        "name":  "web",
                        "strategy":  "round_robin",
                        "host_header":  "preserve",
+                       "passive_health":  {
+                                              "enabled":  false,
+                                              "consecutive_failures":  5,
+                                              "count_5xx":  false
+                                          },
                        "sticky":  {
                                       "mode":  "off",
                                       "cookie":  null,

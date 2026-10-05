@@ -27,7 +27,7 @@ every new request sees the complete new config. Nothing is ever half-applied.
 
 | Applies | Fields |
 |---|---|
-| Next request | `groups` (backends added or removed, weights, strategy, `host_header`, `sticky`), `routing`, `trusted_proxies`, `balancing`, `timeouts` (per request; `client_header_ms` for a connection's first request counts from the accept), `pool.wait_timeout_ms`, `pool.fail_fast_connect`, `limits.max_client_connections` |
+| Next request | `groups` (backends added or removed, weights, strategy, `host_header`, `sticky`, `passive_health`), `routing`, `trusted_proxies`, `balancing`, `timeouts` (per request; `client_header_ms` for a connection's first request counts from the accept), `pool.wait_timeout_ms`, `pool.fail_fast_connect`, `limits.max_client_connections` |
 | At once, on each pool | `pool.max_connections_per_backend`, `pool.max_idle_per_backend`, `pool.max_waiters_per_backend`, `pool.idle_timeout_ms`. Idle connections over a lower `max_idle` are closed; a lower cap is reached as busy connections are released (they are never cut) |
 | At once | `groups[].health`: health checks restart with the new settings (only when a backend or a health setting changed). A backend's current health state is kept |
 | New client connections | `limits` (parser limits) and `buffers` |
@@ -127,8 +127,9 @@ and `request_id` (the X-Request-Id) when they apply.
 | `event_log.recent_events` | integer | 0–100000 | Newest entries kept in memory for the dashboard's live list |
 | `event_log.trace_requests` | boolean | `true` / `false` | Debug mode: log every pipeline step of every request as `request_step` (plan IV.18). High volume |
 
-Events written: `engine_started`, `engine_stopped`, `backend_marked_unhealthy` (with `reason` and
-`failures`), `backend_marked_healthy` (`successes`), `no_backend_available`, `connection_rejected`
+Events written: `engine_started`, `engine_stopped`, `backend_marked_unhealthy` (with `reason`,
+`failures` and `check`: `active` for probes, `passive` for real requests, with the request that
+tipped it over), `backend_marked_healthy` (`successes`, `check`), `no_backend_available`, `connection_rejected`
 (over `max_client_connections`), `pool_rejected` (`queue_full` / `wait_timeout`), `backend_error`
 (`status`, `reason`), `response_aborted`, `timeout` (client-side timeouts except keep-alive idle),
 `retry` and `retry_result` (stale pooled connection), `config_watch_started`,
@@ -257,6 +258,32 @@ A killed backend is excluded within `interval_ms × N + timeout_ms` (plan IV.10)
 checks only move a backend between healthy and unhealthy; they never change a draining
 backend. Every backend starts healthy. Probe sockets skip Windows' connect retries after a
 refusal, so a dead backend fails a probe at once instead of after about a second.
+
+`groups[].passive_health`: passive health checks (plan IV.10, phase 2). Real request outcomes
+count toward health too, so a backend that fails real traffic is taken out without waiting for
+probes:
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `passive_health.enabled` | boolean | `true` / `false` | Count real request outcomes toward health |
+| `passive_health.consecutive_failures` | integer | 1–10000 | Failed requests to one backend in a row, with no successful one in between, before it is marked unhealthy (its idle pooled connections are closed and it gets no new requests) |
+| `passive_health.count_5xx` | boolean | `true` / `false` | Whether a 5xx response from the backend counts as a failure. Off by default because a 5xx is often the application's answer, not a sick backend. Errors the proxy generates itself are never the backend's 5xx |
+
+What counts:
+- **Failure:** the connect fails or times out, sending the request fails, the response times out
+  (`backend_response_ms`, `backend_idle_ms`), the response is malformed or cut off, and with
+  `count_5xx` a 5xx status.
+- **Success** (resets the count): any other complete response.
+- **Neither:** requests the proxy answered itself (no eligible backend, pool full) and requests
+  whose client went away, since those are not the backend's fault.
+
+Under concurrent traffic "in a row" means no success was recorded between the failures, in the
+order requests finished. Passive checks only take a backend out; they never bring one back,
+because an unhealthy backend gets no traffic to judge it by. **Active probes bring it back**, and
+only after `healthy_threshold` successful probes counted after the mark-down. Probes that
+succeeded before it don't count, so a backend failing real requests while its health endpoint
+still answers is not let straight back in. Like active checks, passive checks never change a
+draining backend.
 
 `groups[].sticky`: session affinity (plan IV.9). The lookup runs **after routing, inside the
 group routing chose**, and before the balancer. A session is a cookie value, mapped in the

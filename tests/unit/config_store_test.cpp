@@ -66,6 +66,9 @@ TEST(ConfigStore, ConcurrentReadersNeverSeeAHalfAppliedSnapshot) {
             }
         });
     }
+    // Publish only once every reader is reading: in a release build the 20,000 publishes can
+    // otherwise finish before a reader thread has even started.
+    while (reads.load() < 1000) std::this_thread::yield();
     for (std::uint16_t gen = 2; gen < 20000; ++gen) store.publish(make_snapshot(gen));
     stop = true;
     for (auto& t : readers) t.join();

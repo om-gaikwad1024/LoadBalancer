@@ -2,7 +2,7 @@
 
 HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Reference: `docs/plan.md` (section numbers below point into it).
 
-**Current step:** 2.4 sticky sessions done — waiting for review/commit; next: 2.5 passive health checks
+**Current step:** 2.5 passive health checks done — waiting for review/commit; next: 2.6 graceful drain
 
 ## Rules
 - Read only the `docs/plan.md` sections listed for the current step. Never read the whole plan again, and never re-read the PDF.
@@ -52,7 +52,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 - [x] 2.2 Weighted RR, least response time (EWMA), IP hash (IV.7)
 - [x] 2.3 Content routing: path, header, cookie (IV.8)
 - [x] 2.4 Sticky sessions per group, after routing (IV.9, III)
-- [ ] 2.5 Passive health checks (IV.10)
+- [x] 2.5 Passive health checks (IV.10)
 - [ ] 2.6 Graceful drain (IV.12)
 - [ ] 2.7 Dashboard phase 2: GDI graphs, log viewer, admin via validation path (IV.17)
 - [ ] 2.8 Gate: reload + drain under load, zero dropped requests

@@ -54,13 +54,16 @@ BackendRuntime::BackendRuntime(const BackendConfig& config, std::string group_na
 bool BackendRuntime::mark_unhealthy() noexcept {
     BackendState expected = BackendState::Healthy;
     if (!state.compare_exchange_strong(expected, BackendState::Unhealthy, std::memory_order_acq_rel)) return false;
+    times_marked_down.fetch_add(1, std::memory_order_acq_rel);
     pool.close_idle();
     return true;
 }
 
 bool BackendRuntime::mark_healthy() noexcept {
     BackendState expected = BackendState::Unhealthy;
-    return state.compare_exchange_strong(expected, BackendState::Healthy, std::memory_order_acq_rel);
+    if (!state.compare_exchange_strong(expected, BackendState::Healthy, std::memory_order_acq_rel)) return false;
+    passive_failures_in_a_row.store(0, std::memory_order_relaxed);  // a fresh start
+    return true;
 }
 
 void BackendRuntime::record_response_time(Duration sample, TimePoint now, Duration decay) noexcept {
@@ -112,6 +115,7 @@ BackendStats BackendRuntime::stats() const {
     s.health_probes = probes.load();
     s.probe_failures_in_a_row = probe_failures_in_a_row.load();
     s.probe_successes_in_a_row = probe_successes_in_a_row.load();
+    s.passive_failures_in_a_row = passive_failures_in_a_row.load();
     s.last_probe_error = last_probe_error();
     if (ewma_at_.load() != 0) s.response_time_ms = ewma_us_.load() / 1000.0;
     return s;

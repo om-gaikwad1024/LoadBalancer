@@ -58,7 +58,8 @@ bool HealthChecker::start(const ConfigSnapshot& config,
         const auto members = group_it->backends.size();
         const auto index = per_group_index[static_cast<std::size_t>(group_it - config.groups.begin())]++;
 
-        Probe p{b, hc, {}, Hysteresis(hc.unhealthy_threshold, hc.healthy_threshold)};
+        Probe p{b, hc, {}, Hysteresis(hc.unhealthy_threshold, hc.healthy_threshold),
+                b->times_marked_down.load(std::memory_order_acquire)};
         if (hc.type == HealthConfig::Type::Http) {
             p.request = "GET " + hc.path + " HTTP/1.1\r\nHost: " + b->endpoint +
                         "\r\nUser-Agent: lb-health-check\r\nConnection: close\r\n\r\n";
@@ -221,12 +222,18 @@ void HealthChecker::finish(Probe& p, bool ok, std::string detail) {
     backend::BackendRuntime& b = *p.backend;
     b.probes.fetch_add(1, std::memory_order_relaxed);
     const bool currently_up = b.state.load(std::memory_order_acquire) != BackendState::Unhealthy;
+    const std::uint64_t mark_downs = b.times_marked_down.load(std::memory_order_acquire);
+    if (mark_downs != p.seen_mark_downs) {  // marked down since the last probe (by real traffic)
+        p.seen_mark_downs = mark_downs;
+        p.hysteresis.restart_successes();
+    }
     const Hysteresis::Change change = p.hysteresis.record(ok, currently_up);
     b.probe_failures_in_a_row.store(p.hysteresis.failures_in_a_row(), std::memory_order_relaxed);
     b.probe_successes_in_a_row.store(p.hysteresis.successes_in_a_row(), std::memory_order_relaxed);
     b.set_last_probe_error(ok ? std::string() : detail);
 
     if (change == Hysteresis::Change::MarkDown && b.mark_unhealthy()) {
+        p.seen_mark_downs = b.times_marked_down.load(std::memory_order_acquire);
         if (listener_) listener_({b.id, false, detail, p.hysteresis.failures_in_a_row()});
     } else if (change == Hysteresis::Change::MarkUp && b.mark_healthy()) {
         if (listener_) listener_({b.id, true, "probe succeeded", p.hysteresis.successes_in_a_row()});

@@ -449,12 +449,12 @@ private:
                 events_->emit("backend_marked_healthy",
                               t.backend_id + " marked healthy after " + std::to_string(t.in_a_row) +
                                   " successful probes",
-                              {{"successes", t.in_a_row}}, t.backend_id);
+                              {{"successes", t.in_a_row}, {"check", "active"}}, t.backend_id);
             } else {
                 events_->emit("backend_marked_unhealthy",
                               t.backend_id + " marked unhealthy after " + std::to_string(t.in_a_row) +
                                   " failed probes: " + t.reason,
-                              {{"failures", t.in_a_row}, {"reason", t.reason}}, t.backend_id);
+                              {{"failures", t.in_a_row}, {"reason", t.reason}, {"check", "active"}}, t.backend_id);
             }
         };
         auto next = std::make_unique<health::HealthChecker>();

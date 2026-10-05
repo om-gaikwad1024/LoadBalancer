@@ -56,3 +56,14 @@ TEST(Hysteresis, StreakCountersSaturate) {
     EXPECT_EQ(h.successes_in_a_row(), 2u);
     EXPECT_EQ(h.failures_in_a_row(), 0u);
 }
+
+// Passive checks (step 2.5) can mark a backend down while its probes keep succeeding. The
+// successes before that must not count: re-inclusion needs M new ones.
+TEST(Hysteresis, MarkDownByAnotherCheckNeedsMFreshSuccesses) {
+    Hysteresis h(3, 3);
+    for (int i = 0; i < 5; ++i) EXPECT_EQ(h.record(true, true), Change::None);  // streak saturated at 3
+    h.restart_successes();  // marked down by real traffic
+    EXPECT_EQ(h.record(true, false), Change::None);
+    EXPECT_EQ(h.record(true, false), Change::None);
+    EXPECT_EQ(h.record(true, false), Change::MarkUp);
+}

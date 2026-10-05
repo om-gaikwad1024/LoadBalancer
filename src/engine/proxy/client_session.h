@@ -103,8 +103,11 @@ private:
     void log_event(std::string_view type, std::string message, nlohmann::json fields = nlohmann::json::object()) const noexcept;
     void finish_exchange();
     enum class BackendOutcome : std::uint8_t { Success, Failure, NotJudged };
-    // Ends the current request's use of its backend: in-flight count and success/failure.
-    void end_backend_use(BackendOutcome outcome) noexcept;
+    // Ends the current request's use of its backend: in-flight count, success/failure, the
+    // response-time sample and passive health. `reason` describes a failure.
+    void end_backend_use(BackendOutcome outcome, std::string_view reason = {}) noexcept;
+    // Plan IV.10 passive checks: count this request's outcome toward its backend's health.
+    void record_passive_health(bool failed, std::string_view reason) noexcept;
     void reset_for_next_request();
 
     // Gives the backend connection back to its pool (reusable) or closes it, freeing the slot.
@@ -204,6 +207,7 @@ private:
     std::size_t metrics_series_ = 0;  // backend series to charge; 0 = whole-proxy only
 
     // Session affinity for the current request (plan IV.9).
+    const GroupConfig* group_config_ = nullptr;  // the routed group (in config_)
     const StickyConfig* sticky_ = nullptr;  // the routed group's settings, when it is sticky
     std::string sticky_group_;
     std::string sticky_set_cookie_;  // Set-Cookie value for the response (inserted cookie mode)

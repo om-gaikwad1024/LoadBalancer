@@ -154,6 +154,15 @@ struct BackendConfig {
     std::uint32_t weight = 0;
 };
 
+// Passive health checks for one group (plan IV.10, phase 2): real request outcomes count
+// toward health. Consecutive failed requests mark a backend unhealthy; only active probes
+// bring it back (it gets no traffic while unhealthy).
+struct PassiveHealthConfig {
+    bool enabled = false;
+    std::uint32_t consecutive_failures = 0;  // failed requests in a row, with no success between them
+    bool count_5xx = false;                  // a 5xx response from the backend counts as a failure
+};
+
 // Session affinity for one group (plan IV.9): the session key is a cookie, mapped to a
 // backend id in the sticky table for ttl_ms after its last use.
 struct StickyConfig {
@@ -173,6 +182,7 @@ struct GroupConfig {
     Strategy strategy = Strategy::RoundRobin;
     HostHeaderMode host_header = HostHeaderMode::Preserve;
     HealthConfig health;
+    PassiveHealthConfig passive_health;
     StickyConfig sticky;
 };
 

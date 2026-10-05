@@ -472,7 +472,8 @@ void ClientSession::on_request_head() {
         if (group->strategy == Strategy::IpHash) {
             pick.client_hash = balance::hash_key(client_identity(peer_address_, req.fields, *config_));
         }
-        backend_rt_ = pick_backend(*group, config_->find_group(group_name), req, pick);
+        group_config_ = config_->find_group(group_name);
+        backend_rt_ = pick_backend(*group, group_config_, req, pick);
     }
     if (!backend_rt_) {
         // Plan IV.7/VI: no eligible backend is answered at once with 503, never a hang, and
@@ -704,7 +705,7 @@ void ClientSession::backend_response_failed(std::string_view reason) {
               backend_rt_->id + " failed mid-response (" + std::string(reason) +
                   "); client connection cut so it sees an incomplete response",
               {{"reason", reason}});
-    end_backend_use(BackendOutcome::Failure);
+    end_backend_use(BackendOutcome::Failure, reason);
     record_outcome(0);
     close_all(true);
 }
@@ -718,7 +719,7 @@ void ClientSession::fail_request(int status, bool backend_fault, std::string_vie
         metrics_series_ = 0;  // the proxy refused the request; no backend is charged
     }
     close_backend(false);
-    end_backend_use(backend_fault ? BackendOutcome::Failure : BackendOutcome::NotJudged);
+    end_backend_use(backend_fault ? BackendOutcome::Failure : BackendOutcome::NotJudged, reason);
     trace(TraceStep::ErrorResponse, status);
     ctx_.counters->error_responses.fetch_add(1, std::memory_order_relaxed);
     client_out_ = error_response(status, request_tag_);
@@ -765,7 +766,7 @@ void ClientSession::finish_exchange() {
     reset_for_next_request();
 }
 
-void ClientSession::end_backend_use(BackendOutcome outcome) noexcept {
+void ClientSession::end_backend_use(BackendOutcome outcome, std::string_view reason) noexcept {
     if (!backend_in_use_ || !backend_rt_) return;
     backend_in_use_ = false;
     backend_rt_->in_flight.fetch_sub(1, std::memory_order_relaxed);
@@ -786,6 +787,37 @@ void ClientSession::end_backend_use(BackendOutcome outcome) noexcept {
                                               decay);
         }
     }
+
+    if (outcome == BackendOutcome::Failure) {
+        record_passive_health(true, reason);
+    } else if (outcome == BackendOutcome::Success) {
+        const bool count_5xx = group_config_ != nullptr && group_config_->passive_health.count_5xx;
+        if (count_5xx && response_status_ >= 500) {
+            record_passive_health(true, "HTTP " + std::to_string(response_status_));
+        } else {
+            record_passive_health(false, {});
+        }
+    }
+}
+
+void ClientSession::record_passive_health(bool failed, std::string_view reason) noexcept {
+    if (group_config_ == nullptr || !group_config_->passive_health.enabled) return;
+    backend::BackendRuntime& b = *backend_rt_;
+    if (!failed) {
+        b.passive_failures_in_a_row.store(0, std::memory_order_relaxed);
+        return;
+    }
+    const std::uint32_t threshold = group_config_->passive_health.consecutive_failures;
+    const std::uint32_t in_a_row = b.passive_failures_in_a_row.fetch_add(1, std::memory_order_relaxed) + 1;
+    // mark_unhealthy() changes only a healthy backend, once: a draining backend stays draining,
+    // and concurrent failures cannot mark it down twice.
+    if (in_a_row < threshold || !b.mark_unhealthy()) return;
+    b.passive_failures_in_a_row.store(0, std::memory_order_relaxed);
+    ctx_.counters->backends_marked_down.fetch_add(1, std::memory_order_relaxed);
+    log_event("backend_marked_unhealthy",
+              b.id + " marked unhealthy after " + std::to_string(in_a_row) + " failed requests in a row: " +
+                  std::string(reason),
+              {{"failures", in_a_row}, {"reason", reason}, {"check", "passive"}});
 }
 
 void ClientSession::reset_for_next_request() {
@@ -824,6 +856,7 @@ void ClientSession::reset_for_next_request() {
     request_head_seen_ = false;
     outcome_recorded_ = false;
     metrics_series_ = 0;
+    group_config_ = nullptr;
     sticky_ = nullptr;
     sticky_group_.clear();
     sticky_set_cookie_.clear();

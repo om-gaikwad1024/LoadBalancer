@@ -471,6 +471,17 @@ void build_limits(const json& root, Validator& v, ConfigSnapshot& out) {
 
 bool is_token(std::string_view s) noexcept;
 
+void build_passive_health(const json& gj, const std::string& gpath, Validator& v, PassiveHealthConfig& out) {
+    const std::string path = child(gpath, "passive_health");
+    const json* j = Validator::field(gj, "passive_health");
+    if (j == nullptr || !v.check_object(*j, path, {"enabled", "consecutive_failures", "count_5xx"})) return;
+    if (auto b = v.get_bool(*j, path, "enabled")) out.enabled = *b;
+    if (auto n = v.get_uint(*j, path, "consecutive_failures", 1, 10'000)) {
+        out.consecutive_failures = static_cast<std::uint32_t>(*n);
+    }
+    if (auto b = v.get_bool(*j, path, "count_5xx")) out.count_5xx = *b;
+}
+
 void build_sticky(const json& gj, const std::string& gpath, Validator& v, StickyConfig& out) {
     const std::string path = child(gpath, "sticky");
     const json* j = Validator::field(gj, "sticky");
@@ -568,7 +579,7 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
     for (std::size_t gi = 0; gi < j->size(); ++gi) {
         const json& gj = (*j)[gi];
         const std::string gpath = child(path, gi);
-        if (!v.check_object(gj, gpath, {"name", "strategy", "host_header", "health", "sticky", "backends"})) continue;
+        if (!v.check_object(gj, gpath, {"name", "strategy", "host_header", "health", "passive_health", "sticky", "backends"})) continue;
 
         GroupConfig group;
         if (auto name = v.get_name(gj, gpath, "name")) {
@@ -594,6 +605,7 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
             else v.error(child(gpath, "host_header"), "must be \"preserve\" or \"backend\"");
         }
         build_health(gj, gpath, v, group.health);
+        build_passive_health(gj, gpath, v, group.passive_health);
         build_sticky(gj, gpath, v, group.sticky);
 
         const json* bj = Validator::field(gj, "backends");

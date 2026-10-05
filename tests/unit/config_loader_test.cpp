@@ -40,6 +40,7 @@ json good_config() {
       "groups": [
         { "name": "web", "strategy": "round_robin", "host_header": "preserve",
           "sticky": { "mode": "inserted_cookie", "cookie": "lb_session", "ttl_ms": 600000 },
+          "passive_health": { "enabled": true, "consecutive_failures": 7, "count_5xx": true },
           "health": { "type": "http", "path": "/healthz", "interval_ms": 2000, "timeout_ms": 500,
                       "unhealthy_threshold": 3, "healthy_threshold": 2 },
           "backends": [
@@ -47,6 +48,7 @@ json good_config() {
             { "id": "web-2", "address": "127.0.0.2", "port": 9002, "weight": 1 } ] },
         { "name": "api", "strategy": "least_connections", "host_header": "backend",
           "sticky": { "mode": "off", "cookie": null, "ttl_ms": 1000 },
+          "passive_health": { "enabled": false, "consecutive_failures": 1, "count_5xx": false },
           "health": { "type": "tcp", "path": "/", "interval_ms": 1000, "timeout_ms": 1000,
                       "unhealthy_threshold": 1, "healthy_threshold": 5 },
           "backends": [
@@ -150,6 +152,10 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.groups[0].sticky.ttl_ms, 600000u);
     EXPECT_EQ(c.groups[1].sticky.mode, lb::StickyConfig::Mode::Off);
     EXPECT_TRUE(c.groups[1].sticky.cookie.empty());
+    EXPECT_TRUE(c.groups[0].passive_health.enabled);
+    EXPECT_EQ(c.groups[0].passive_health.consecutive_failures, 7u);
+    EXPECT_TRUE(c.groups[0].passive_health.count_5xx);
+    EXPECT_FALSE(c.groups[1].passive_health.enabled);
     EXPECT_EQ(c.dashboard.publish_interval_ms, 250u);
     EXPECT_EQ(c.dashboard.event_rows, 300u);
     EXPECT_EQ(c.event_log.path, "logs/events.jsonl");
@@ -329,6 +335,10 @@ INSTANTIATE_TEST_SUITE_P(WrongType, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/groups/0/backends/0/weight", "3", "expected an integer"},
     BadValueCase{"/routing/default_group", 5, "expected a string"},
     BadValueCase{"/groups/0/sticky", "on", "expected an object"},
+    BadValueCase{"/groups/0/passive_health", true, "expected an object"},
+    BadValueCase{"/groups/0/passive_health/enabled", "yes", "expected true or false"},
+    BadValueCase{"/groups/0/passive_health/consecutive_failures", 0, "between 1 and 10000"},
+    BadValueCase{"/groups/0/passive_health/count_5xx", 1, "expected true or false"},
     BadValueCase{"/groups/0/sticky/mode", "source_ip", "must be \"off\", \"application_cookie\" or \"inserted_cookie\""},
     BadValueCase{"/groups/0/sticky/cookie", nullptr, "cookie name"},
     BadValueCase{"/groups/0/sticky/cookie", "lb session", "cookie name"},

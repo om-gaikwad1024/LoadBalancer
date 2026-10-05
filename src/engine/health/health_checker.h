@@ -50,6 +50,7 @@ private:
         HealthConfig config;
         std::string request;  // HTTP probe request, empty for TCP
         Hysteresis hysteresis;
+        std::uint64_t seen_mark_downs = 0;  // backend->times_marked_down when last probed
         TimePoint next_start{};
         TimePoint deadline{};
         Phase phase = Phase::Idle;

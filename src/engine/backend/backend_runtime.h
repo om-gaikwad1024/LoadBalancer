@@ -49,6 +49,14 @@ public:
     bool mark_unhealthy() noexcept;
     bool mark_healthy() noexcept;
 
+    // Passive health checks (plan IV.10): failed real requests in a row (reset by a
+    // successful one, and when the backend is marked healthy again).
+    std::atomic<std::uint32_t> passive_failures_in_a_row{0};
+    // Every mark-down, from probes or from real traffic. The active checker restarts its
+    // success count when this changes, so a backend taken out by passive checks needs M
+    // successful probes counted after that, not ones from before.
+    std::atomic<std::uint64_t> times_marked_down{0};
+
     // Least response time (plan IV.7): a time-weighted EWMA of backend response time. A
     // sample's weight grows with the time since the previous one (decay = time constant),
     // so the average covers about the same span of time at any request rate. Lock-free;

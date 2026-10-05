@@ -36,6 +36,7 @@ struct BackendStats {
     std::uint64_t health_probes = 0;
     std::uint32_t probe_failures_in_a_row = 0;
     std::uint32_t probe_successes_in_a_row = 0;
+    std::uint32_t passive_failures_in_a_row = 0;  // failed real requests in a row (plan IV.10, phase 2)
     std::string last_probe_error;  // empty after a successful probe
 };
 

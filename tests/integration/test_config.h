@@ -71,6 +71,7 @@ inline nlohmann::json make_proxy_config_json(const std::vector<std::uint16_t>& b
          {{{"name", "web"},
            {"strategy", "round_robin"},
            {"host_header", "preserve"},
+           {"passive_health", {{"enabled", false}, {"consecutive_failures", 3}, {"count_5xx", false}}},
            {"sticky", {{"mode", "off"}, {"cookie", nullptr}, {"ttl_ms", 60000}}},
            // First probes are staggered over the first interval, so with 60 s no probe
            // touches tests that are not about health checks; those set short intervals.

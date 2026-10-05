@@ -77,6 +77,11 @@
       "name": "web",
       "strategy": "round_robin",
       "host_header": "preserve",
+      "passive_health": {
+        "enabled": true,
+        "consecutive_failures": 5,
+        "count_5xx": false
+      },
       "sticky": {
         "mode": "inserted_cookie",
         "cookie": "lb_session",
@@ -109,6 +114,11 @@
       "name": "api",
       "strategy": "least_response_time",
       "host_header": "preserve",
+      "passive_health": {
+        "enabled": true,
+        "consecutive_failures": 5,
+        "count_5xx": false
+      },
       "sticky": {
         "mode": "application_cookie",
         "cookie": "SESSIONID",

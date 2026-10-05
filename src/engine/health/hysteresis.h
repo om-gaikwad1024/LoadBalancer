@@ -24,6 +24,10 @@ public:
         return currently_up && failures_ >= down_after_ ? Change::MarkDown : Change::None;
     }
 
+    // The backend was marked down by something else (passive checks): successes so far no
+    // longer count toward bringing it back.
+    void restart_successes() noexcept { successes_ = 0; }
+
     std::uint32_t failures_in_a_row() const noexcept { return failures_; }
     std::uint32_t successes_in_a_row() const noexcept { return successes_; }
 
