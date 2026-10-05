@@ -68,13 +68,16 @@ void write_metrics(const lb::Engine& engine, const std::string& path) {
                   {"backends_marked_up", s.backends_marked_up},
                   {"client_timeouts", s.client_timeouts},
                   {"backend_timeouts", s.backend_timeouts},
-                  {"events_dropped", s.events_dropped}};
+                  {"events_dropped", s.events_dropped},
+                  {"reloads_accepted", s.reloads_accepted},
+                  {"reloads_rejected", s.reloads_rejected}};
     j["backend_states"] = nlohmann::json::array();
     for (const auto& b : engine.backend_stats()) {
         j["backend_states"].push_back({{"id", b.id},
                                        {"state", std::string(lb::to_string(b.state))},
                                        {"requests", b.requests},
                                        {"failures", b.failures},
+                                       {"response_time_ms", b.response_time_ms},
                                        {"connections_opened", b.connections_opened},
                                        {"connections_reused", b.connections_reused}});
     }

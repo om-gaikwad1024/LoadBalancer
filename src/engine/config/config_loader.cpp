@@ -311,6 +311,18 @@ void build_config_reload(const json& root, Validator& v, ConfigSnapshot& out) {
     if (auto n = v.get_uint(*j, path, "debounce_ms", 10, 60'000)) out.config_reload.debounce_ms = static_cast<std::uint32_t>(*n);
 }
 
+void build_balancing(const json& root, Validator& v, ConfigSnapshot& out) {
+    const std::string path = "/balancing";
+    const json* j = Validator::field(root, "balancing");
+    if (j == nullptr || !v.check_object(*j, path, {"response_time_decay_ms", "response_time_expiry_ms"})) return;
+    if (auto n = v.get_uint(*j, path, "response_time_decay_ms", 100, 600'000)) {
+        out.balancing.response_time_decay_ms = static_cast<std::uint32_t>(*n);
+    }
+    if (auto n = v.get_uint(*j, path, "response_time_expiry_ms", 100, 3'600'000)) {
+        out.balancing.response_time_expiry_ms = static_cast<std::uint32_t>(*n);
+    }
+}
+
 void build_event_log(const json& root, Validator& v, ConfigSnapshot& out) {
     const std::string path = "/event_log";
     const json* j = Validator::field(root, "event_log");
@@ -524,7 +536,14 @@ bool build_groups(const json& root, Validator& v, ConfigSnapshot& out) {
         if (auto strategy = v.get_string(gj, gpath, "strategy")) {
             if (*strategy == "round_robin") group.strategy = Strategy::RoundRobin;
             else if (*strategy == "least_connections") group.strategy = Strategy::LeastConnections;
-            else v.error(child(gpath, "strategy"), "must be \"round_robin\" or \"least_connections\"");
+            else if (*strategy == "weighted_round_robin") group.strategy = Strategy::WeightedRoundRobin;
+            else if (*strategy == "least_response_time") group.strategy = Strategy::LeastResponseTime;
+            else if (*strategy == "ip_hash") group.strategy = Strategy::IpHash;
+            else {
+                v.error(child(gpath, "strategy"),
+                        "must be \"round_robin\", \"least_connections\", \"weighted_round_robin\", "
+                        "\"least_response_time\" or \"ip_hash\"");
+            }
         }
         if (auto mode = v.get_string(gj, gpath, "host_header")) {
             if (*mode == "preserve") group.host_header = HostHeaderMode::Preserve;
@@ -607,10 +626,11 @@ ConfigLoadResult parse_config(std::string_view json_text) {
 
     auto snapshot = std::make_shared<ConfigSnapshot>();
     if (v.check_object(root, "", {"listen", "workers", "limits", "buffers", "pool", "maintenance", "metrics",
-                                  "event_log", "dashboard", "config_reload", "timeouts", "trusted_proxies", "groups",
-                                  "routing"})) {
+                                  "event_log", "dashboard", "config_reload", "balancing", "timeouts", "trusted_proxies",
+                                  "groups", "routing"})) {
         build_metrics(root, v, *snapshot);
         build_config_reload(root, v, *snapshot);
+        build_balancing(root, v, *snapshot);
         build_dashboard(root, v, *snapshot);
         build_event_log(root, v, *snapshot);
         build_trusted_proxies(root, v, *snapshot);

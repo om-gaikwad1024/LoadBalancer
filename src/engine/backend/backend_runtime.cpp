@@ -2,7 +2,9 @@
 
 #include <ws2tcpip.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace lb {
 
@@ -61,6 +63,24 @@ bool BackendRuntime::mark_healthy() noexcept {
     return state.compare_exchange_strong(expected, BackendState::Healthy, std::memory_order_acq_rel);
 }
 
+void BackendRuntime::record_response_time(Duration sample, TimePoint now, Duration decay) noexcept {
+    const double s = std::chrono::duration<double, std::micro>(sample).count();
+    const std::int64_t at = now.time_since_epoch().count();
+    const std::int64_t prev = ewma_at_.exchange(at == 0 ? 1 : at, std::memory_order_acq_rel);
+    // Weight of the old average: exp(-elapsed / decay). The first sample replaces it.
+    const double elapsed = prev == 0 ? 0.0 : static_cast<double>(std::max<std::int64_t>(at - prev, 0));
+    const double w = decay.count() > 0 ? std::exp(-elapsed / static_cast<double>(decay.count())) : 0.0;
+    double old = ewma_us_.load(std::memory_order_relaxed);
+    while (!ewma_us_.compare_exchange_weak(old, prev == 0 ? s : old * w + s * (1.0 - w), std::memory_order_relaxed)) {
+    }
+}
+
+std::optional<double> BackendRuntime::response_time_us(TimePoint now, Duration expiry) const noexcept {
+    const std::int64_t at = ewma_at_.load(std::memory_order_acquire);
+    if (at == 0 || now.time_since_epoch().count() - at > expiry.count()) return std::nullopt;
+    return ewma_us_.load(std::memory_order_relaxed);
+}
+
 void BackendRuntime::set_last_probe_error(std::string error) {
     std::lock_guard lock(probe_error_mutex_);
     last_probe_error_ = std::move(error);
@@ -93,6 +113,7 @@ BackendStats BackendRuntime::stats() const {
     s.probe_failures_in_a_row = probe_failures_in_a_row.load();
     s.probe_successes_in_a_row = probe_successes_in_a_row.load();
     s.last_probe_error = last_probe_error();
+    if (ewma_at_.load() != 0) s.response_time_ms = ewma_us_.load() / 1000.0;
     return s;
 }
 

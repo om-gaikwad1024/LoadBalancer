@@ -27,7 +27,7 @@ every new request sees the complete new config. Nothing is ever half-applied.
 
 | Applies | Fields |
 |---|---|
-| Next request | `groups` (backends added or removed, weights, strategy, `host_header`), `routing`, `trusted_proxies`, `timeouts` (per request; `client_header_ms` for a connection's first request counts from the accept), `pool.wait_timeout_ms`, `pool.fail_fast_connect`, `limits.max_client_connections` |
+| Next request | `groups` (backends added or removed, weights, strategy, `host_header`), `routing`, `trusted_proxies`, `balancing`, `timeouts` (per request; `client_header_ms` for a connection's first request counts from the accept), `pool.wait_timeout_ms`, `pool.fail_fast_connect`, `limits.max_client_connections` |
 | At once, on each pool | `pool.max_connections_per_backend`, `pool.max_idle_per_backend`, `pool.max_waiters_per_backend`, `pool.idle_timeout_ms`. Idle connections over a lower `max_idle` are closed; a lower cap is reached as busy connections are released (they are never cut) |
 | At once | `groups[].health`: health checks restart with the new settings (only when a backend or a health setting changed). A backend's current health state is kept |
 | New client connections | `limits` (parser limits) and `buffers` |
@@ -163,6 +163,17 @@ has been quiet for `debounce_ms`. A change whose content is byte-for-byte the ac
 | `config_reload.watch_file` | boolean | `true` / `false` | Reload the config file automatically when it changes. With `false`, reloads happen only on request (`reload` command) |
 | `config_reload.debounce_ms` | integer | 10–60000 | Quiet time after the last change before the file is read. Every further write restarts it |
 
+## `balancing`: least response time (plan IV.7)
+Used by every group with `"strategy": "least_response_time"`. Each backend's average is
+time-weighted: a new sample's weight grows with the time since that backend's previous sample,
+so the average covers about the same span of time whether the backend gets 10 or 10,000 requests
+a second.
+
+| Field | Type | Valid range | Meaning |
+|---|---|---|---|
+| `balancing.response_time_decay_ms` | integer | 100–600000 | EWMA time constant: the old average's weight is `exp(-elapsed / decay)`, so a sample this old counts for 1/e of what it did. Smaller reacts faster, larger is steadier |
+| `balancing.response_time_expiry_ms` | integer | 100–3600000 | An average with no sample for this long is dropped. The backend is then scored like the best one and measured again, so a backend that was slow once isn't avoided forever |
+
 ## `timeouts` (plan VI)
 Every wait has a limit, measured on the monotonic clock, so changing the system clock has no
 effect. "Absolute" means a fixed deadline that more traffic does not extend; "idle" means the
@@ -201,9 +212,19 @@ Forwarding headers the backend receives:
 | Field | Type | Valid range | Meaning |
 |---|---|---|---|
 | `groups[].name` | string | name rules; unique across groups | Group name, used by routing |
-| `groups[].strategy` | string | `"round_robin"` or `"least_connections"` (phase 2 adds weighted round robin, least response time, IP hash) | How a backend is picked within the group (plan IV.7). Only healthy, non-draining backends are candidates; with none, the request gets **503** at once. `round_robin` rotates over the eligible backends, so an excluded backend's share is spread evenly. `least_connections` picks the fewest in-flight requests, with ties broken by rotation |
+| `groups[].strategy` | string | `"round_robin"`, `"least_connections"`, `"weighted_round_robin"`, `"least_response_time"` or `"ip_hash"` | How a backend is picked within the group (plan IV.7); see the table below. Only healthy, non-draining backends are candidates; with none, the request gets **503** at once |
 | `groups[].host_header` | string | `"preserve"` or `"backend"` | `preserve` forwards the client's `Host` (plan IV.6 default); `backend` rewrites it to the chosen backend's `address:port`. `X-Forwarded-Host` carries the original either way |
 | `groups[].backends` | array | at least one entry | Backends in this group |
+
+Strategies (plan IV.7). None takes a lock when it picks:
+
+| Strategy | Picks | Notes |
+|---|---|---|
+| `round_robin` | Each eligible backend in turn | An excluded backend's share is spread evenly over the rest. Weights are ignored |
+| `least_connections` | Fewest in-flight requests | Ties are broken by rotation, so the first backend is not always chosen. Weights are ignored |
+| `weighted_round_robin` | Shares in proportion to `weight`, interleaved | A precomputed cycle (weights divided by their greatest common divisor) gives each backend exactly its weight in turns, spread evenly: 3:1 is `A A B A`, not `A A A B`. A turn that falls on an excluded backend goes to the others in proportion to their weights |
+| `least_response_time` | Lowest *response-time average × (in-flight requests + 1)* | Each backend keeps an exponentially weighted moving average (EWMA) of its response time, from backend connection ready to the last response byte (see [`balancing`](#balancing-least-response-time-plan-iv7)). A failed request (connect error, timeout, broken response) counts as taking the full `timeouts.backend_response_ms`, so a backend that fails fast never looks fast. A backend with no average (new, or idle past `response_time_expiry_ms`) is scored with the best average in the group, so it gets traffic and is measured again. With no averages at all this behaves as least connections. Ties are broken by rotation |
+| `ip_hash` | The backend chosen by the client's address | Keyed by the client identity: the TCP peer, or the `X-Forwarded-For` client when the peer is in `trusted_proxies` (the same trust rule as everywhere else). Weighted rendezvous hashing: a client keeps its backend as long as that backend is eligible, and when a backend is excluded or added only the clients it loses or gains move. Shares follow the weights. A reload maps every client the same way |
 
 `groups[].health`: active health checks (plan IV.10), run on a dedicated thread with
 non-blocking probes, so a slow probe never delays other probes or live traffic:
@@ -229,7 +250,7 @@ Each backend:
 | `groups[].backends[].id` | string | name rules; unique across **all** groups | Stable backend identity. The registry keys live state (health, drain, counters) by this id |
 | `groups[].backends[].address` | string | IPv4 literal, not `0.0.0.0` | Backend address |
 | `groups[].backends[].port` | integer | 1–65535 | Backend port. The same `address:port` may not appear twice in one group (it may appear in different groups) |
-| `groups[].backends[].weight` | integer | 1–1000 | Relative capacity, used by weighted round robin (phase 2) and shown on the dashboard |
+| `groups[].backends[].weight` | integer | 1–1000 | Relative capacity, used by `weighted_round_robin` and `ip_hash` and shown on the dashboard |
 
 ## `routing` (plan IV.8)
 | Field | Type | Valid range | Meaning |

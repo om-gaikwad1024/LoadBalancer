@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "backend/backend_types.h"
@@ -48,6 +49,15 @@ public:
     bool mark_unhealthy() noexcept;
     bool mark_healthy() noexcept;
 
+    // Least response time (plan IV.7): a time-weighted EWMA of backend response time. A
+    // sample's weight grows with the time since the previous one (decay = time constant),
+    // so the average covers about the same span of time at any request rate. Lock-free;
+    // concurrent samples may race, which only shifts the average by one sample's weight.
+    void record_response_time(Duration sample, TimePoint now, Duration decay) noexcept;
+    // The average in microseconds, or nothing if there is no sample younger than `expiry`
+    // (a backend that gets no traffic is measured afresh instead of being avoided forever).
+    std::optional<double> response_time_us(TimePoint now, Duration expiry) const noexcept;
+
     // Active health-check results (written by the health thread, read for the dashboard).
     std::atomic<std::uint64_t> probes{0};
     std::atomic<std::uint32_t> probe_failures_in_a_row{0};
@@ -58,6 +68,8 @@ public:
     BackendStats stats() const;
 
 private:
+    std::atomic<double> ewma_us_{0.0};
+    std::atomic<std::int64_t> ewma_at_{0};  // Clock ticks of the last sample; 0 = none yet
     mutable std::mutex probe_error_mutex_;
     std::string last_probe_error_;
 };

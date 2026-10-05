@@ -46,6 +46,13 @@ struct MetricsConfig {
     std::uint32_t max_backend_series = 0;
 };
 
+// Least response time (plan IV.7): each backend keeps an exponentially weighted moving
+// average of its response time. Shared by every group using that strategy.
+struct BalancingConfig {
+    std::uint32_t response_time_decay_ms = 0;   // EWMA time constant: a sample this old weighs 1/e
+    std::uint32_t response_time_expiry_ms = 0;  // an average older than this is dropped and re-measured
+};
+
 // Hot reload (plan IV.14). Both fields need a restart to change.
 struct ConfigReloadConfig {
     bool watch_file = false;        // watch the config file and apply valid changes
@@ -95,11 +102,13 @@ struct Ipv4Cidr {
     bool contains(std::uint32_t address) const noexcept { return (address & mask) == network; }
 };
 
-// Load-balancing strategy, selectable per group (plan IV.7). Phase 2 adds weighted round
-// robin, least response time and IP hash.
+// Load-balancing strategy, selectable per group (plan IV.7).
 enum class Strategy : std::uint8_t {
     RoundRobin,
-    LeastConnections,  // fewest in-flight requests (plan IV.5 decision)
+    LeastConnections,    // fewest in-flight requests (plan IV.5 decision)
+    WeightedRoundRobin,  // shares proportional to backend weights, interleaved
+    LeastResponseTime,   // lowest EWMA of backend response time, scaled by in-flight requests
+    IpHash,              // client address picks the backend (weighted rendezvous hashing)
 };
 
 // Active health checks for one group's backends (plan IV.10).
@@ -168,6 +177,7 @@ struct ConfigSnapshot {
     EventLogConfig event_log;
     DashboardConfig dashboard;
     ConfigReloadConfig config_reload;
+    BalancingConfig balancing;
     TimeoutsConfig timeouts;
     std::vector<GroupConfig> groups;
     RoutingConfig routing;

@@ -457,7 +457,15 @@ void ClientSession::on_request_head() {
 
     // Phase 1 routing: every request goes to the default group (content routing: step 2.3).
     // The group's balancer picks among healthy, non-draining backends (plan IV.7).
-    if (const auto group = topology_->find_group(config_->routing.default_group)) backend_rt_ = group->pick();
+    if (const auto group = topology_->find_group(config_->routing.default_group)) {
+        balance::PickContext pick;
+        pick.now = Clock::now();
+        pick.response_time_expiry = std::chrono::milliseconds(config_->balancing.response_time_expiry_ms);
+        if (group->strategy == Strategy::IpHash) {
+            pick.client_hash = balance::hash_key(client_identity(peer_address_, req.fields, *config_));
+        }
+        backend_rt_ = group->pick(pick);
+    }
     if (!backend_rt_) {
         // Plan IV.7/VI: no eligible backend is answered at once with 503, never a hang, and
         // logged loudly: this is the one case where clients correctly see an error.
@@ -639,6 +647,21 @@ void ClientSession::end_backend_use(BackendOutcome outcome) noexcept {
     backend_rt_->in_flight.fetch_sub(1, std::memory_order_relaxed);
     if (outcome == BackendOutcome::Success) backend_rt_->successes.fetch_add(1, std::memory_order_relaxed);
     if (outcome == BackendOutcome::Failure) backend_rt_->failures.fetch_add(1, std::memory_order_relaxed);
+
+    // Least response time (plan IV.7): a response is sampled from connection ready to its
+    // last byte; a failure counts as taking the whole backend_response_ms, so a backend
+    // that fails fast never looks fast. Requests the proxy refused are not samples.
+    if (config_ && outcome != BackendOutcome::NotJudged) {
+        const TimePoint now = Clock::now();
+        const auto decay = std::chrono::milliseconds(config_->balancing.response_time_decay_ms);
+        if (outcome == BackendOutcome::Success && backend_ready_at_ != TimePoint{} &&
+            backend_done_at_ >= backend_ready_at_) {
+            backend_rt_->record_response_time(backend_done_at_ - backend_ready_at_, now, decay);
+        } else if (outcome == BackendOutcome::Failure) {
+            backend_rt_->record_response_time(std::chrono::milliseconds(config_->timeouts.backend_response_ms), now,
+                                              decay);
+        }
+    }
 }
 
 void ClientSession::reset_for_next_request() {

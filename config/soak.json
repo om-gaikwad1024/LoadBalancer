@@ -103,5 +103,9 @@
     "config_reload":  {
                           "watch_file":  false,
                           "debounce_ms":  300
-                      }
+                      },
+    "balancing":  {
+                      "response_time_decay_ms":  10000,
+                      "response_time_expiry_ms":  30000
+                  }
 }

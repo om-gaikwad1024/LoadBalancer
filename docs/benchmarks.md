@@ -86,6 +86,30 @@ Over the whole throughput run: 872,603 requests through **167 new backend connec
 
 1,890,001 requests, **0 failed, 0 dropped iterations**, k6 p99 0.59 ms; 90,050 client connections and 771 backend connections opened; 14 marked down and 14 marked up; 0 event-log entries dropped. Over the whole run, handles stayed between 222 and 226 after warm-up, and private bytes between 8.63 and 8.66 MB.
 
+## Phase 2: load-balancing strategies (step 2.2, plan IV.7)
+Measured by the integration tests in `tests/integration/proxy_balancing_test.cpp`, release build,
+3 consecutive runs (`--gtest_repeat=3`). In-process proxy (4 workers) and mock backends, with 8
+blocking keep-alive test clients sending back to back for 1.5 s (1 s for weighted round robin).
+These are closed-loop clients, so request counts depend on latency; the shares are what matter.
+
+**Slow backend (20 ms of added latency) next to a fast one (no added latency):** share of
+requests sent to the slow backend.
+
+| Strategy | Run 1 | Run 2 | Run 3 | Requests per run |
+|---|---|---|---|---|
+| `round_robin` | 50.06% | 50.06% | 50.06% | 825–889 (the slow backend paces every client) |
+| `least_connections` | 1.24% | 1.35% | 1.35% | 15,440–18,058 |
+| `least_response_time` | **0.02%** (4) | **0.02%** (4) | **0.02%** (4) | 18,400–18,446 |
+
+Under least response time, the slow backend got only its 4 cold-start requests (before its first
+sample came back). The averages the engine reported at the end were 22.5–31.1 ms for the slow
+backend and 0.61–0.76 ms for the fast one. A backend that resets every connection got 2 requests
+in each run, against 4,318–4,363 good responses from the other: a failure counts as the full
+`backend_response_ms`.
+
+**Weighted round robin, weights 3:1:** the weight-3 backend got **75.00%** of 12,443–12,550
+requests in each run.
+
 ## How to reproduce
 Build first (`tools\build.cmd release all`), then from the repo root:
 ```
@@ -94,3 +118,5 @@ powershell -ExecutionPolicy Bypass -File tools\scripts\kill_test.ps1
 powershell -ExecutionPolicy Bypass -File tools\scripts\soak.ps1 -Minutes 30
 ```
 Each script prints its results and writes `results.json` to its run directory. `kill_test.ps1` and `soak.ps1` exit with a non-zero code when the gate criterion fails.
+
+Strategy shares (step 2.2): `build\release\tests\lb_integration_tests.exe --gtest_filter=ProxyTest.*Weighted*:ProxyTest.*IpHash*:ProxyTest.*LeastResponse* --gtest_repeat=3`; each test prints a `[ lb ]` line with its counts.

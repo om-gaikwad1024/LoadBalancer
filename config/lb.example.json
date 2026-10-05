@@ -53,6 +53,10 @@
     "watch_file": true,
     "debounce_ms": 300
   },
+  "balancing": {
+    "response_time_decay_ms": 10000,
+    "response_time_expiry_ms": 30000
+  },
   "timeouts": {
     "client_header_ms": 10000,
     "client_body_idle_ms": 30000,

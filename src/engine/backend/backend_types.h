@@ -24,6 +24,7 @@ struct BackendStats {
     std::uint64_t requests = 0;
     std::uint64_t successes = 0;
     std::uint64_t failures = 0;
+    double response_time_ms = -1;  // EWMA used by least response time (plan IV.7); -1 = no sample yet
     // Connection pool (plan IV.5).
     std::uint64_t open_connections = 0;  // in use + connecting + idle
     std::uint64_t idle_connections = 0;

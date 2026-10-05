@@ -28,6 +28,7 @@ json good_config() {
       "maintenance": { "interval_ms": 250 },
       "metrics": { "slice_ms": 1000, "window_slices": 10, "max_backend_series": 64 },
       "config_reload": { "watch_file": true, "debounce_ms": 250 },
+      "balancing": { "response_time_decay_ms": 5000, "response_time_expiry_ms": 20000 },
       "dashboard": { "publish_interval_ms": 250, "event_rows": 300 },
       "event_log": { "path": "logs/events.jsonl", "max_file_bytes": 1048576, "max_files": 3, "max_queue": 1000,
                      "recent_events": 200, "trace_requests": true },
@@ -133,6 +134,8 @@ TEST(ConfigLoader, AcceptsGoodConfigAndMapsEveryField) {
     EXPECT_EQ(c.metrics.max_backend_series, 64u);
     EXPECT_TRUE(c.config_reload.watch_file);
     EXPECT_EQ(c.config_reload.debounce_ms, 250u);
+    EXPECT_EQ(c.balancing.response_time_decay_ms, 5000u);
+    EXPECT_EQ(c.balancing.response_time_expiry_ms, 20000u);
     EXPECT_EQ(c.dashboard.publish_interval_ms, 250u);
     EXPECT_EQ(c.dashboard.event_rows, 300u);
     EXPECT_EQ(c.event_log.path, "logs/events.jsonl");
@@ -182,6 +185,21 @@ TEST(ConfigLoader, ThreadsAutoMeansUnresolved) {
     const auto r = load(with(good_config(), "/workers/threads", "auto"));
     ASSERT_TRUE(r.ok()) << describe(r);
     EXPECT_FALSE(r.snapshot->workers.threads.has_value());
+}
+
+TEST(ConfigLoader, EveryStrategyNameMaps) {
+    const std::pair<const char*, lb::Strategy> names[] = {
+        {"round_robin", lb::Strategy::RoundRobin},
+        {"least_connections", lb::Strategy::LeastConnections},
+        {"weighted_round_robin", lb::Strategy::WeightedRoundRobin},
+        {"least_response_time", lb::Strategy::LeastResponseTime},
+        {"ip_hash", lb::Strategy::IpHash},
+    };
+    for (const auto& [name, strategy] : names) {
+        const auto r = load(with(good_config(), "/groups/0/strategy", name));
+        ASSERT_TRUE(r.ok()) << name;
+        EXPECT_EQ(r.snapshot->groups[0].strategy, strategy) << name;
+    }
 }
 
 TEST(ConfigLoader, ListenPortZeroIsAllowedForEphemeralBinding) {
@@ -316,6 +334,8 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/metrics/max_backend_series", 4097, "between 1 and 4096"},
     BadValueCase{"/config_reload/watch_file", 1, "expected true or false"},
     BadValueCase{"/config_reload/debounce_ms", 9, "between 10 and 60000"},
+    BadValueCase{"/balancing/response_time_decay_ms", 99, "between 100 and 600000"},
+    BadValueCase{"/balancing/response_time_expiry_ms", 3600001, "between 100 and 3600000"},
     BadValueCase{"/dashboard/publish_interval_ms", 49, "between 50 and 10000"},
     BadValueCase{"/dashboard/event_rows", 9, "between 10 and 100000"},
     BadValueCase{"/metrics/window_slices", 0, "between 1 and 120"},
@@ -335,7 +355,7 @@ INSTANTIATE_TEST_SUITE_P(OutOfRange, ConfigLoaderBadValue, ::testing::Values(
     BadValueCase{"/groups/0/health/timeout_ms", 2001, "must not exceed interval_ms"},
     BadValueCase{"/groups/0/health/unhealthy_threshold", 0, "between 1 and 100"},
     BadValueCase{"/groups/0/health/healthy_threshold", 101, "between 1 and 100"},
-    BadValueCase{"/groups/0/strategy", "random", "must be \"round_robin\" or \"least_connections\""},
+    BadValueCase{"/groups/0/strategy", "random", "must be \"round_robin\", \"least_connections\", \"weighted_round_robin\", \"least_response_time\" or \"ip_hash\""},
     BadValueCase{"/groups/0/strategy", 2, "expected a string"},
     BadValueCase{"/groups/0/host_header", "rewrite", "must be \"preserve\" or \"backend\""},
     BadValueCase{"/groups/0/host_header", 1, "expected a string"},
