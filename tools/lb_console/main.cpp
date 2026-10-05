@@ -4,6 +4,8 @@
 // Commands on stdin (one per line), for scripts:
 //   metrics <file>   write metrics, engine stats and backend states as JSON to <file>
 //   reload           reload the config file now (the watcher does this on change)
+//   drain <id>       start draining a backend (not saved to the config file)
+//   undrain <id>     return a draining or drained backend to service
 //   quit             stop gracefully (same as Ctrl+C)
 
 #include <windows.h>
@@ -87,6 +89,8 @@ void write_metrics(const lb::Engine& engine, const std::string& path) {
                                        {"requests", b.requests},
                                        {"failures", b.failures},
                                        {"response_time_ms", b.response_time_ms},
+                                       {"in_flight", b.in_flight},
+                                       {"weight", b.weight},
                                        {"connections_opened", b.connections_opened},
                                        {"connections_reused", b.connections_reused}});
     }
@@ -156,6 +160,15 @@ int main(int argc, char** argv) {
                     if (r.accepted) std::printf("reload applied: %s\n", r.summary.c_str());
                     else if (r.unchanged) std::printf("reload skipped: %s\n", r.summary.c_str());
                     else std::printf("reload rejected: %s\n", r.errors.front().c_str());
+                    std::fflush(stdout);
+                } else if (line.rfind("drain ", 0) == 0) {  // plan IV.12, like the dashboard's Drain
+                    const std::string id = line.substr(6);
+                    std::printf(engine.drain_backend(id) ? "drain started: %s\n" : "drain refused: %s\n", id.c_str());
+                    std::fflush(stdout);
+                } else if (line.rfind("undrain ", 0) == 0) {
+                    const std::string id = line.substr(8);
+                    std::printf(engine.undrain_backend(id) ? "back in service: %s\n" : "undrain refused: %s\n",
+                                id.c_str());
                     std::fflush(stdout);
                 } else if (line == "quit") {
                     ::SetEvent(g_stop_event);

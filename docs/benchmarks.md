@@ -110,6 +110,57 @@ in each run, against 4,318–4,363 good responses from the other: a failure coun
 **Weighted round robin, weights 3:1:** the weight-3 backend got **75.00%** of 12,443–12,550
 requests in each run.
 
+## Phase 2 gate: reloads and drains under load (step 2.8)
+Plan I gate and X "Drain and reload safety": *reload and drain tests pass under load with zero
+dropped requests.* `tools\scripts\live_ops_test.ps1` runs real processes: `lb_console` (release),
+four mock backends (each adding 5 ms), and k6 at a constant arrival rate for 60 s. Every 6 s it
+changes the running proxy the way an operator would, and waits for each change to take effect:
+
+1. add `web-4` (config file edit, picked up by the file watcher)
+2. `web-1` weight 3 and strategy `least_connections` (file edit)
+3. drain `web-2` (operator command, as the dashboard's Drain button does), until it is drained
+4. remove `web-2` from the config (file edit)
+5. drain `web-3` from the config (`"drain": "start"`), until it is drained
+6. save a half-written config (must be rejected and change nothing)
+7. `web-3` back in service (`"drain": "cancel"`)
+8. back to round robin, `"keep"`
+
+A run passes only if all of these hold:
+- k6 saw zero failed requests and zero dropped iterations, and the proxy sent zero error responses.
+- Exactly 6 reloads were accepted and 1 rejected.
+- Both drains completed, with no timeout and no aborted request.
+- Each drained backend received no request after it was drained, counted by the mock itself.
+
+**2,000 req/s, 3 runs:**
+
+| Run | Requests | Failed | Dropped | k6 p50 / p99 / max | Drains: duration (in flight at start) |
+|---|---|---|---|---|---|
+| 1 | 119,999 | **0** | **0** | 5.56 / 6.97 / 14.1 ms | 30 ms (3), 46 ms (4) |
+| 2 | 120,001 | **0** | **0** | 5.57 / 6.99 / 13.4 ms | 61 ms (3), 107 ms (4) |
+| 3 | 120,001 | **0** | **0** | 5.55 / 6.97 / 11.2 ms | 45 ms (2), 76 ms (4) |
+
+**4,000 req/s, 3 runs:**
+
+| Run | Requests | Failed | Dropped | k6 p50 / p99 / max | Drains: duration (in flight at start) |
+|---|---|---|---|---|---|
+| 1 | 239,999 | **0** | **0** | 5.61 / 6.84 / 15.6 ms | 29 ms (5), 106 ms (7) |
+| 2 | 240,000 | **0** | **0** | 5.62 / 6.81 / 23.3 ms | 14 ms (5), 76 ms (7) |
+| 3 | 240,000 | **0** | **0** | 5.62 / 6.84 / 16.8 ms | 45 ms (5), 91 ms (7) |
+| **Median** | **240,000** | **0** | **0** | **5.62 / 6.84 / 16.8 ms** | |
+
+Every check passed in all six runs. Each drain started with requests in flight (2–7) and completed in
+14–107 ms. Completion is checked every `maintenance.interval_ms`, 100 ms in `config/liveops.json`.
+The backend latency is the mocks' added 5 ms; p99 stays under 7 ms through every reload and drain.
+
+**5,000 req/s (6 runs):** 0 failed requests in every run. Three runs had no dropped iterations;
+the other three had 22, 34 and 63. All checks other than the drop count passed in every run. In
+the run with 55 drops (taken with `-Timeline` to locate them), they all fell in one burst at
+16.95 s. That was 4.9 s after the nearest change, a reload that had already taken effect, and 1 s
+before the next one (the drain). In that second k6 started 4,947 requests instead of 5,000. This is
+the same load-generator limit the phase-1 throughput runs hit at 5,000 req/s with no changes at all
+(1,952 dropped in one run). **Gate result: passed at 4,000 req/s, zero failed and zero dropped
+requests; at 5,000 req/s, zero failed requests.**
+
 ## How to reproduce
 Build first (`tools\build.cmd release all`), then from the repo root:
 ```
@@ -118,5 +169,12 @@ powershell -ExecutionPolicy Bypass -File tools\scripts\kill_test.ps1
 powershell -ExecutionPolicy Bypass -File tools\scripts\soak.ps1 -Minutes 30
 ```
 Each script prints its results and writes `results.json` to its run directory. `kill_test.ps1` and `soak.ps1` exit with a non-zero code when the gate criterion fails.
+
+Live operations gate (step 2.8), 3 runs each:
+```
+powershell -ExecutionPolicy Bypass -File tools\scripts\live_ops_test.ps1 -Rate 2000
+powershell -ExecutionPolicy Bypass -File tools\scripts\live_ops_test.ps1 -Rate 4000
+```
+Add `-Timeline` to also record k6's per-request CSV and report when any dropped or failed iteration happened relative to the steps.
 
 Strategy shares (step 2.2): `build\release\tests\lb_integration_tests.exe --gtest_filter=ProxyTest.*Weighted*:ProxyTest.*IpHash*:ProxyTest.*LeastResponse* --gtest_repeat=3`; each test prints a `[ lb ]` line with its counts.

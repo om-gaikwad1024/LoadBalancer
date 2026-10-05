@@ -369,8 +369,9 @@ Backend states: **healthy** (gets requests), **unhealthy** (health checks took i
 running so they can bring it back), **draining** (taken out on purpose, in-flight requests
 finishing) and **drained** (out of service: no requests, no probes, no pooled connections).
 
-A drain starts from the config (`"drain": "start"`), from `Engine::drain_backend()` (also
-`set_backend_state(..., Draining)`), and in phase 2.7 from the dashboard. When it starts, the
+A drain starts from the config (`"drain": "start"`), from the dashboard's **Drain** button, from
+`drain <id>` on `lb_console`'s stdin (`undrain <id>` returns it), or from `Engine::drain_backend()`
+(also `set_backend_state(..., Draining)`). When it starts, the
 backend gets no new requests and no new sticky sessions (sticky clients move to another backend in
 the group), and its idle pooled connections are closed at once. Connections in use close when their
 request finishes instead of returning to the pool. The maintenance thread then checks it every

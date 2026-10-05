@@ -2,7 +2,7 @@
 
 HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Reference: `docs/plan.md` (section numbers below point into it).
 
-**Current step:** 2.7 dashboard phase 2 done — waiting for review/commit; next: 2.8 phase 2 gate
+**Current step:** Phase 2 complete (2.8 gate passed) — waiting for review/commit; phases 3–4 only on request
 
 ## Rules
 - Read only the `docs/plan.md` sections listed for the current step. Never read the whole plan again, and never re-read the PDF.
@@ -28,7 +28,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 | `tools/mock_backend/` | `mock_backend_lib` + `mock_backend.exe` (plan IX); switches and `/__mock/*` control in its README |
 | `tests/integration/test_*.h` | test HTTP client (own reader) and child-process helper for kill tests |
 | `tools/k6/` | `constant_rate.js`, `soak.js` (constant-arrival-rate only) |
-| `tools/scripts/` | `bench.ps1`, `kill_test.ps1`, `soak.ps1` (+ `common.ps1`); results in `build\gate\<name>-<time>\results.json`; configs `config/bench.json`, `killtest.json`, `soak.json` |
+| `tools/scripts/` | gates: `bench.ps1`, `kill_test.ps1`, `soak.ps1` (phase 1), `live_ops_test.ps1` (phase 2) (+ `common.ps1`); results in `build\gate\<name>-<time>\results.json`; configs `config/bench.json`, `killtest.json`, `soak.json`, `liveops.json` |
 | `config/` | complete example configs (`lb.example.json`, `routing.example.json`); every `*.json` here must stay valid (unit test loads them) |
 | `docs/` | `plan.md`, original PDF, `benchmarks.md`, `config-reference.md` |
 | `cmake/`, `CMakePresets.json`, `vcpkg.json` | build setup (presets `debug`, `release`, `asan` = all tests under ASan, `fuzz`; triplet x64-windows) |
@@ -55,7 +55,7 @@ HTTP/1.1 reverse proxy / load balancer, C++20 + MFC, Winsock IOCP data plane. Re
 - [x] 2.5 Passive health checks (IV.10)
 - [x] 2.6 Graceful drain (IV.12)
 - [x] 2.7 Dashboard phase 2: GDI graphs, log viewer, admin via validation path (IV.17)
-- [ ] 2.8 Gate: reload + drain under load, zero dropped requests
+- [x] 2.8 Gate: reload + drain under load, zero dropped requests
 ### Phase 3 — Extension (only on request)
 - [ ] 3.1 Body buffering + retries with budget (IV.11)
 - [ ] 3.2 Circuit breaker (IV.11)
