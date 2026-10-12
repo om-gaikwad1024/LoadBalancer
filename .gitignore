@@ -13,3 +13,6 @@ CMakeUserPresets.json
 /logs/
 *.jsonl
 k6-results/
+
+# Local assistant instructions (kept on this machine, not published)
+CLAUDE.md
